@@ -1,0 +1,2 @@
+instrument,timeframe,analysis_as_of_time,latest_bias,last_bias_known_at,latest_high_classification,latest_low_classification,reason,candles_analyzed,confirmed_swings,trend_snapshots
+EURUSD,H1,2026-11-03 17:00:00+00:00,BEARISH,2026-11-03 16:00:00+00:00,LH,LL,Latest confirmed high is LH and latest confirmed low is LL.,3050,805,789

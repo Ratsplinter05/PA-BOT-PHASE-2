@@ -1,0 +1,16 @@
+metric,value
+instrument,EURUSD
+assessment_count,932
+shared_history_start,2026-05-11 08:00:00+00:00
+shared_history_end,2026-11-03 16:00:00+00:00
+directional_permission_count,150
+directional_permission_percentage,16.09
+directional_permission_denied_count,782
+h4_source_report,EURUSD_H4_trend_history_20261104T145439_762615Z.csv
+h1_source_report,EURUSD_H1_trend_history_20261104T150047_688883Z.csv
+alignment_state_ALIGNED_BEARISH,95 (10.19%)
+alignment_state_ALIGNED_BULLISH,55 (5.9%)
+alignment_state_CONFLICT,139 (14.91%)
+alignment_state_H1_MIXED,250 (26.82%)
+alignment_state_H4_MIXED,354 (37.98%)
+alignment_state_H4_UNCONFIRMED,39 (4.18%)

@@ -1,0 +1,10 @@
+check,passed,details
+execution_disabled,True,Trade execution remains disabled.
+h4_source_valid,True,206 H4 snapshots loaded.
+h1_source_valid,True,789 H1 snapshots loaded.
+h4_known_at_consistency,True,All H4 recorded known-at times match calculated times.
+h1_known_at_consistency,True,All H1 recorded known-at times match calculated times.
+shared_history_valid,True,2026-05-11 08:00:00+00:00 to 2026-11-03 16:00:00+00:00
+no_lookahead,True,Every selected H4 and H1 snapshot was known at or before its assessment time.
+reference_point,False,{}
+assessment_history_nonempty,True,932 assessments generated.

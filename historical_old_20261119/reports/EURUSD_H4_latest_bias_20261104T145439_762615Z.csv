@@ -1,0 +1,2 @@
+instrument,timeframe,analysis_as_of_time,latest_bias,last_bias_known_at,latest_high_classification,latest_low_classification,reason,candles_analyzed,confirmed_swings,trend_snapshots
+EURUSD,H4,2026-11-04 12:00:00+00:00,MIXED,2026-11-04 00:00:00+00:00,LH,HL,Latest confirmed high and low show conflicting structural signals.,793,212,206
