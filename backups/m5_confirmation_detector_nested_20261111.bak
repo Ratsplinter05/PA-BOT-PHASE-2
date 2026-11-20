@@ -1,0 +1,527 @@
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import math
+from typing import Literal, Optional
+
+import pandas as pd
+
+from research.swing_detection.break_models import StructureBreak
+from research.swing_detection.market_structure_engine import (
+    MarketStructureResult,
+)
+from strategy.m15_setup_detector import (
+    M15Setup,
+    M15SetupResult,
+)
+
+
+M5ConfirmationState = Literal[
+    "WAITING",
+    "CONFIRMED",
+    "EXPIRED",
+    "REJECTED",
+]
+
+
+@dataclass(frozen=True)
+class M5Confirmation:
+    """Auditable M5 confirmation record linked to an M15 setup."""
+
+    setup_id: str
+    direction: str
+    state: M5ConfirmationState
+
+    qualification_time: Optional[datetime]
+
+    confirmation_time: Optional[datetime]
+    confirmation_break_time: Optional[datetime]
+    confirmation_break_index: Optional[int]
+    confirmation_event: Optional[StructureBreak]
+
+    candles_elapsed: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class M5ConfirmationResult:
+    """Collection of M5 confirmation lifecycle records."""
+
+    confirmations: tuple[M5Confirmation, ...]
+
+    @property
+    def confirmed(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item
+            for item in self.confirmations
+            if item.state == "CONFIRMED"
+        )
+
+    @property
+    def waiting(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item
+            for item in self.confirmations
+            if item.state == "WAITING"
+        )
+
+    @property
+    def expired(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item
+            for item in self.confirmations
+            if item.state == "EXPIRED"
+        )
+
+    @property
+    def rejected(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item
+            for item in self.confirmations
+            if item.state == "REJECTED"
+        )
+
+
+class M5ConfirmationDetector:
+    """
+    Confirm qualified M15 setups using completed M5 BOS events.
+
+    Consumes:
+        - M15SetupResult
+        - Completed M5 candles
+        - M5 MarketStructureResult
+
+    A matching M5 BOS must occur at or after the M15 qualification
+    time and within the configured number of eligible M5 candles.
+
+    Candle timestamps represent candle opening times.
+    Confirmation time represents the M5 BOS candle closing time.
+
+    This component does not detect BOS independently and does not
+    place, modify, or manage trading orders.
+    """
+
+    TIMEFRAME_DURATION = timedelta(minutes=5)
+
+    def __init__(self, confirmation_window_candles: int = 12) -> None:
+
+        if (
+            isinstance(confirmation_window_candles, bool)
+            or not isinstance(confirmation_window_candles, int)
+        ):
+            raise TypeError(
+                "confirmation_window_candles must be an integer."
+            )
+
+        if confirmation_window_candles < 1:
+            raise ValueError(
+                "confirmation_window_candles must be at least 1."
+            )
+
+        self.confirmation_window_candles = (
+            confirmation_window_candles
+        )
+
+    @staticmethod
+    def _to_utc_datetime(value, field_name: str) -> datetime:
+        """Convert an aware timestamp to a UTC Python datetime."""
+
+        try:
+            timestamp = pd.Timestamp(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"{field_name} must be a valid timezone-aware timestamp."
+            ) from exc
+
+        if pd.isna(timestamp) or timestamp.tzinfo is None:
+            raise ValueError(
+                f"{field_name} must be timezone-aware."
+            )
+
+        return timestamp.tz_convert("UTC").to_pydatetime()
+
+    @staticmethod
+    def _setup_identity(setup: M15Setup, qualification_time: datetime) -> str:
+        """
+        Build a deterministic identity from the originating M15 setup.
+
+        The identity is stable across repeated analysis of the same
+        setup and does not depend on Python's process-specific hash.
+        """
+
+        return (
+            f"{setup.direction}:"
+            f"{setup.break_time.isoformat()}:"
+            f"{setup.break_index}:"
+            f"{setup.broken_level:.12g}:"
+            f"{qualification_time.isoformat()}"
+        )
+
+    @classmethod
+    def _validate_inputs(
+        cls,
+        m15_setups: M15SetupResult,
+        m5_candles: pd.DataFrame,
+        m5_market_structure: MarketStructureResult,
+    ) -> tuple[datetime, ...]:
+
+        if not isinstance(m15_setups, M15SetupResult):
+            raise TypeError(
+                "m15_setups must be an M15SetupResult."
+            )
+
+        if not isinstance(m5_candles, pd.DataFrame):
+            raise TypeError(
+                "m5_candles must be a pandas DataFrame."
+            )
+
+        if not isinstance(
+            m5_market_structure,
+            MarketStructureResult,
+        ):
+            raise TypeError(
+                "m5_market_structure must be a MarketStructureResult."
+            )
+
+        if m5_market_structure.timeframe != "M5":
+            raise ValueError(
+                "m5_market_structure must contain M5 analysis."
+            )
+
+        if m5_market_structure.candle_count != len(m5_candles):
+            raise ValueError(
+                "M5 candle count does not match market-structure analysis."
+            )
+
+        if "time" not in m5_candles.columns:
+            raise ValueError(
+                "m5_candles must contain a time column."
+            )
+
+        if m5_candles.empty:
+            raise ValueError(
+                "m5_candles cannot be empty."
+            )
+
+        candle_times = tuple(
+            cls._to_utc_datetime(value, "M5 candle time")
+            for value in m5_candles["time"]
+        )
+
+        for previous, current in zip(
+            candle_times,
+            candle_times[1:],
+        ):
+            if current <= previous:
+                raise ValueError(
+                    "M5 candle timestamps must be strictly increasing."
+                )
+
+        return candle_times
+
+    @classmethod
+    def _validate_bos_events(
+        cls,
+        market_structure: MarketStructureResult,
+        candle_times: tuple[datetime, ...],
+    ) -> tuple[StructureBreak, ...]:
+        """Validate and chronologically order M5 BOS events."""
+
+        validated_events = []
+
+        for event in market_structure.bos_events:
+
+            if not isinstance(event, StructureBreak):
+                raise TypeError(
+                    "M5 BOS events must be StructureBreak instances."
+                )
+
+            if event.event_type != "BOS":
+                raise ValueError(
+                    "M5 market_structure.bos_events may contain only BOS events."
+                )
+
+            if event.direction not in ("BULLISH", "BEARISH"):
+                raise ValueError(
+                    "Unsupported M5 BOS direction."
+                )
+
+            if (
+                isinstance(event.break_index, bool)
+                or not isinstance(event.break_index, int)
+            ):
+                raise TypeError(
+                    "M5 BOS break_index must be an integer."
+                )
+
+            if not 0 <= event.break_index < len(candle_times):
+                raise ValueError(
+                    "M5 BOS break_index is outside candle data."
+                )
+
+            if (
+                isinstance(event.level_price, bool)
+                or not isinstance(event.level_price, (int, float))
+                or not math.isfinite(float(event.level_price))
+                or event.level_price <= 0
+            ):
+                raise ValueError(
+                    "M5 BOS level_price must be positive and finite."
+                )
+
+            if (
+                isinstance(event.close_price, bool)
+                or not isinstance(event.close_price, (int, float))
+                or not math.isfinite(float(event.close_price))
+                or event.close_price <= 0
+            ):
+                raise ValueError(
+                    "M5 BOS close_price must be positive and finite."
+                )
+
+            break_time = cls._to_utc_datetime(
+                event.break_time,
+                "M5 BOS break_time",
+            )
+
+            expected_time = candle_times[event.break_index]
+
+            if break_time != expected_time:
+                raise ValueError(
+                    "M5 BOS break_time does not match its candle index."
+                )
+
+            validated_events.append(event)
+
+        return tuple(
+            sorted(
+                validated_events,
+                key=lambda event: (
+                    event.break_index,
+                    event.direction,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _rejected(
+        setup: M15Setup,
+        setup_id: str,
+        qualification_time: Optional[datetime],
+        reason: str,
+    ) -> M5Confirmation:
+
+        return M5Confirmation(
+            setup_id=setup_id,
+            direction=setup.direction,
+            state="REJECTED",
+            qualification_time=qualification_time,
+            confirmation_time=None,
+            confirmation_break_time=None,
+            confirmation_break_index=None,
+            confirmation_event=None,
+            candles_elapsed=0,
+            reason=reason,
+        )
+
+    def _evaluate_setup(
+        self,
+        setup: M15Setup,
+        candle_times: tuple[datetime, ...],
+        bos_events: tuple[StructureBreak, ...],
+    ) -> M5Confirmation:
+
+        if not isinstance(setup, M15Setup):
+            raise TypeError(
+                "Every M15 setup must be an M15Setup instance."
+            )
+
+        if setup.direction not in ("BULLISH", "BEARISH"):
+            raise ValueError(
+                "M15 setup direction must be BULLISH or BEARISH."
+            )
+
+        if setup.state != "QUALIFIED":
+            return self._rejected(
+                setup,
+                self._setup_identity(
+                    setup,
+                    self._to_utc_datetime(
+                        setup.break_time,
+                        "M15 setup break_time",
+                    ),
+                ),
+                None,
+                (
+                    "M15 setup is not eligible for M5 confirmation: "
+                    f"state is {setup.state}."
+                ),
+            )
+
+        if setup.qualification_time is None:
+            raise ValueError(
+                "A QUALIFIED M15 setup must have qualification_time."
+            )
+
+        qualification_time = self._to_utc_datetime(
+            setup.qualification_time,
+            "M15 qualification_time",
+        )
+
+        setup_id = self._setup_identity(
+            setup,
+            qualification_time,
+        )
+
+        eligible_indices = tuple(
+            index
+            for index, candle_time in enumerate(candle_times)
+            if candle_time >= qualification_time
+        )
+
+        if not eligible_indices:
+            return M5Confirmation(
+                setup_id=setup_id,
+                direction=setup.direction,
+                state="WAITING",
+                qualification_time=qualification_time,
+                confirmation_time=None,
+                confirmation_break_time=None,
+                confirmation_break_index=None,
+                confirmation_event=None,
+                candles_elapsed=0,
+                reason=(
+                    "Waiting for the first completed M5 candle "
+                    "at or after M15 qualification."
+                ),
+            )
+
+        window_indices = eligible_indices[
+            :self.confirmation_window_candles
+        ]
+
+        eligible_index_set = set(window_indices)
+
+        matching_events = [
+            event
+            for event in bos_events
+            if (
+                event.break_index in eligible_index_set
+                and event.direction == setup.direction
+            )
+        ]
+
+        if matching_events:
+            event = matching_events[0]
+
+            confirmation_break_time = self._to_utc_datetime(
+                event.break_time,
+                "M5 confirmation break_time",
+            )
+
+            confirmation_time = (
+                confirmation_break_time + self.TIMEFRAME_DURATION
+            )
+
+            candles_elapsed = (
+                window_indices.index(event.break_index) + 1
+            )
+
+            return M5Confirmation(
+                setup_id=setup_id,
+                direction=setup.direction,
+                state="CONFIRMED",
+                qualification_time=qualification_time,
+                confirmation_time=confirmation_time,
+                confirmation_break_time=confirmation_break_time,
+                confirmation_break_index=event.break_index,
+                confirmation_event=event,
+                candles_elapsed=candles_elapsed,
+                reason=(
+                    f"Matching {setup.direction} M5 BOS confirmed "
+                    "the qualified M15 setup."
+                ),
+            )
+
+        candles_elapsed = len(window_indices)
+
+        if candles_elapsed >= self.confirmation_window_candles:
+            return M5Confirmation(
+                setup_id=setup_id,
+                direction=setup.direction,
+                state="EXPIRED",
+                qualification_time=qualification_time,
+                confirmation_time=None,
+                confirmation_break_time=None,
+                confirmation_break_index=None,
+                confirmation_event=None,
+                candles_elapsed=self.confirmation_window_candles,
+                reason=(
+                    "The M5 confirmation window completed without "
+                    "a matching directional BOS."
+                ),
+            )
+
+        return M5Confirmation(
+            setup_id=setup_id,
+            direction=setup.direction,
+            state="WAITING",
+            qualification_time=qualification_time,
+            confirmation_time=None,
+            confirmation_break_time=None,
+            confirmation_break_index=None,
+            confirmation_event=None,
+            candles_elapsed=candles_elapsed,
+            reason=(
+                "Waiting for a matching M5 BOS. "
+                f"{candles_elapsed} of "
+                f"{self.confirmation_window_candles} eligible "
+                "M5 candles have completed."
+            ),
+        )
+
+    def detect(
+        self,
+        m15_setups: M15SetupResult,
+        m5_candles: pd.DataFrame,
+        m5_market_structure: MarketStructureResult,
+    ) -> M5ConfirmationResult:
+        """
+        Evaluate qualified M15 setups against completed M5 BOS events.
+
+        All supplied M5 candles must be completed candles.
+        Their timestamps must represent candle opening times.
+
+        The M5 BOS event must:
+            - Match the M15 setup direction.
+            - Occur at or after M15 qualification time.
+            - Fall within the configured confirmation window.
+
+        The earliest matching BOS confirms the setup.
+        """
+
+        candle_times = self._validate_inputs(
+            m15_setups,
+            m5_candles,
+            m5_market_structure,
+        )
+
+        bos_events = self._validate_bos_events(
+            m5_market_structure,
+            candle_times,
+        )
+
+        confirmations = []
+
+        for setup in m15_setups.setups:
+            confirmations.append(
+                self._evaluate_setup(
+                    setup=setup,
+                    candle_times=candle_times,
+                    bos_events=bos_events,
+                )
+            )
+
+        return M5ConfirmationResult(
+            confirmations=tuple(confirmations)
+        )

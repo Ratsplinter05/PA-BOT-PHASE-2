@@ -1,0 +1,30 @@
+app:
+  name: PA-MS Trading Bot
+  environment: development
+  log_level: INFO
+
+mt5:
+  # Leave blank to let the MetaTrader5 package locate the running terminal.
+  terminal_path: null
+  timeout_ms: 60000
+  portable: false
+
+market:
+  instruments:
+    - XAUUSD
+    - GBPUSD
+    - BTCUSD
+    - EURUSD
+    - US30
+    - NAS100
+  timeframes:
+    H4: H4
+    H1: H1
+    M15: M15
+    M5: M5
+  candles_per_timeframe: 300
+  scan_interval_seconds: 15
+
+# Phase 1 is read-only. No order placement is implemented or enabled.
+trading:
+  execution_enabled: false

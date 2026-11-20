@@ -1,0 +1,1749 @@
+﻿PA-MS HISTORICAL RESEARCH MODULE INSPECTION
+
+====================================================================================================
+FILE: .\research\historical_data.py
+====================================================================================================
+
+
+from datetime import datetime, timedelta, timezone
+
+import MetaTrader5 as mt5
+import pandas as pd
+
+from src.config import load_settings
+from src.logger import get_logger
+from src.market_data import MarketData, TIMEFRAME_MAP
+
+
+log = get_logger("HISTORICAL_DATA")
+
+
+TIMEFRAME_SECONDS = {
+    "M5": 300,
+    "M15": 900,
+    "H1": 3600,
+    "H4": 14400,
+}
+
+
+class HistoricalDataCollector:
+    """
+    Retrieves historical OHLC candle data from MT5.
+
+    Features:
+    - Uses timezone-aware UTC date ranges.
+    - Retrieves historical candles in manageable batches.
+    - Supports configurable incomplete-candle exclusion.
+    - Identifies incomplete candles when exclusion is disabled.
+    - Preserves duplicate timestamps for later validation.
+    - Does not place or modify trades.
+
+    MT5 must already be connected before collection.
+    """
+
+    def __init__(self):
+        self.settings = load_settings()
+        self.config = self.settings["research"]["historical_data"]
+
+        self.market_data = MarketData()
+
+        self.batch_size = int(
+            self.config.get("batch_size", 5000)
+        )
+
+        if self.batch_size < 2:
+            raise ValueError(
+                "Historical batch_size must be at least 2."
+            )
+
+        if not self.config.get("enabled", False):
+            raise RuntimeError(
+                "Historical data collection is disabled."
+            )
+
+        self.exclude_forming_candles = self.config.get(
+            "exclude_forming_candles",
+            True
+        )
+
+        if not isinstance(self.exclude_forming_candles, bool):
+            raise ValueError(
+                "exclude_forming_candles must be True or False."
+            )
+
+    @staticmethod
+    def _validate_datetime(value, name):
+        """Validate and convert a datetime to UTC."""
+
+        if not isinstance(value, datetime):
+            raise TypeError(
+                f"{name} must be a datetime object."
+            )
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(
+                f"{name} must be timezone-aware."
+            )
+
+        return value.astimezone(timezone.utc)
+
+    def collect(self, symbol, timeframe, start, end):
+        """
+        Collect historical candles for one symbol and timeframe.
+
+        Date-range semantics:
+        - Candle opening time must fall within start and end.
+        - When incomplete-candle exclusion is enabled, the
+          candle must also close within the requested range
+          and before collection begins.
+
+        Args:
+            symbol: Resolved MT5 broker symbol.
+            timeframe: M5, M15, H1 or H4.
+            start: Timezone-aware start datetime.
+            end: Timezone-aware end datetime.
+
+        Returns:
+            pandas.DataFrame containing retrieved candles.
+        """
+
+        if timeframe not in TIMEFRAME_MAP:
+            raise ValueError(
+                f"Unsupported timeframe: {timeframe}"
+            )
+
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(
+                f"Historical collection is not configured "
+                f"for timeframe: {timeframe}"
+            )
+
+        configured_timeframes = self.settings["market"]["timeframes"]
+
+        if timeframe not in configured_timeframes:
+            raise ValueError(
+                f"Timeframe {timeframe} is not configured "
+                f"in settings.yaml."
+            )
+
+        start = self._validate_datetime(start, "start")
+        end = self._validate_datetime(end, "end")
+
+        if start >= end:
+            raise ValueError(
+                "Start time must be earlier than end time."
+            )
+
+        collection_time = datetime.now(timezone.utc)
+
+        if end > collection_time:
+            raise ValueError(
+                "End time cannot be in the future."
+            )
+
+        timeframe_seconds = TIMEFRAME_SECONDS[timeframe]
+
+        # Confirm the broker symbol exists and is enabled.
+        self.market_data.enable_symbol(symbol)
+
+        # Calculate the maximum time span for each batch.
+        # Each batch covers no more than batch_size candle intervals.
+        batch_window = timedelta(
+            seconds=timeframe_seconds * (self.batch_size - 1)
+        )
+
+        cursor = start
+        batches = []
+        batch_number = 0
+
+        log.info(
+            "Starting historical collection | "
+            "Symbol=%s | Timeframe=%s | Start=%s | End=%s",
+            symbol,
+            timeframe,
+            start.isoformat(),
+            end.isoformat()
+        )
+
+        while cursor <= end:
+
+            batch_number += 1
+
+            batch_end = min(
+                cursor + batch_window,
+                end
+            )
+
+            rates = mt5.copy_rates_range(
+                symbol,
+                TIMEFRAME_MAP[timeframe],
+                cursor,
+                batch_end
+            )
+
+            if rates is None:
+                raise RuntimeError(
+                    f"MT5 historical retrieval failed for "
+                    f"{symbol} {timeframe}. "
+                    f"Batch {batch_number}. "
+                    f"Error: {mt5.last_error()}"
+                )
+
+            if len(rates) > 0:
+
+                df = pd.DataFrame(rates)
+
+                df["time"] = pd.to_datetime(
+                    df["time"],
+                    unit="s",
+                    utc=True
+                )
+
+                batches.append(df)
+
+                log.info(
+                    "Retrieved batch %s | %s candles",
+                    batch_number,
+                    len(df)
+                )
+
+            else:
+
+                log.warning(
+                    "Empty historical batch | "
+                    "Symbol=%s | Timeframe=%s | Batch=%s",
+                    symbol,
+                    timeframe,
+                    batch_number
+                )
+
+            # Advance one second beyond the previous batch end.
+            # MT5 date-range retrieval uses inclusive boundaries.
+            cursor = batch_end + timedelta(seconds=1)
+
+        if not batches:
+
+            log.warning(
+                "No historical candles retrieved for %s %s.",
+                symbol,
+                timeframe
+            )
+
+            return pd.DataFrame()
+
+        result = pd.concat(
+            batches,
+            ignore_index=True
+        )
+
+        # Restrict candle opening times to the requested range.
+        result = result.loc[
+            (result["time"] >= start)
+            & (result["time"] <= end)
+        ].copy()
+
+        # Calculate the closing time of each candle.
+        candle_close_time = (
+            result["time"]
+            + pd.to_timedelta(
+                timeframe_seconds,
+                unit="s"
+            )
+        )
+
+        # Identify candles that had not closed when collection began.
+        forming_mask = candle_close_time > collection_time
+
+        # Check whether each candle closes within the requested range.
+        within_range_mask = candle_close_time <= end
+
+        excluded_count = 0
+
+        if self.exclude_forming_candles:
+
+            # Only retain candles fully contained within the
+            # requested period and completed before collection.
+            completed_mask = (
+                within_range_mask
+                & (~forming_mask)
+            )
+
+            excluded_count = int(
+                (~completed_mask).sum()
+            )
+
+            result = result.loc[completed_mask].copy()
+
+            result["is_forming_candle"] = False
+
+        else:
+
+            # Retain candles based on their opening time.
+            # Mark candles that were still forming at collection time.
+            result["is_forming_candle"] = (
+                forming_mask.loc[result.index].values
+            )
+
+        # Sort chronologically without removing duplicate timestamps.
+        result = result.sort_values(
+            "time"
+        ).reset_index(drop=True)
+
+        log.info(
+            "Historical collection completed | "
+            "Symbol=%s | Timeframe=%s | "
+            "Batches=%s | Candles=%s | Excluded=%s",
+            symbol,
+            timeframe,
+            batch_number,
+            len(result),
+            excluded_count
+        )
+
+        if not result.empty:
+
+            log.info(
+                "Historical coverage | First=%s | Last=%s",
+                result["time"].iloc[0].isoformat(),
+                result["time"].iloc[-1].isoformat()
+            )
+
+        return result
+
+
+====================================================================================================
+FILE: .\research\historical_validation.py
+====================================================================================================
+
+
+from datetime import datetime, timezone
+
+import numpy as np
+import pandas as pd
+
+
+TIMEFRAME_SECONDS = {
+    "M5": 300,
+    "M15": 900,
+    "H1": 3600,
+    "H4": 14400,
+}
+
+
+class HistoricalDataValidator:
+    """
+    Validates historical OHLC candle datasets for research.
+
+    Checks:
+    - Required columns
+    - UTC-aware timestamps
+    - Duplicate timestamps
+    - Chronological ordering
+    - Missing and non-finite values
+    - Positive price values
+    - OHLC consistency
+    - Non-negative volume and spread
+    - Incomplete candles
+    - Potential missing candle intervals
+
+    Potential gaps are reported as warnings because
+    market closures and trading sessions can create
+    legitimate gaps.
+
+    This validator does not modify the input dataset.
+    """
+
+    REQUIRED_COLUMNS = [
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "tick_volume",
+        "spread",
+        "real_volume",
+    ]
+
+    PRICE_COLUMNS = [
+        "open",
+        "high",
+        "low",
+        "close",
+    ]
+
+    NON_NEGATIVE_COLUMNS = [
+        "tick_volume",
+        "spread",
+        "real_volume",
+    ]
+
+    def validate(self, df, timeframe):
+        """
+        Validate one historical candle dataset.
+
+        Args:
+            df: Historical candle DataFrame.
+            timeframe: M5, M15, H1 or H4.
+
+        Returns:
+            Dictionary containing validation results.
+        """
+
+        result = {
+            "status": "FAIL",
+            "valid": False,
+            "timeframe": timeframe,
+            "candle_count": 0,
+            "duplicate_timestamps": 0,
+            "non_chronological_pairs": 0,
+            "invalid_ohlc_rows": 0,
+            "missing_values": 0,
+            "non_finite_values": 0,
+            "non_positive_price_rows": 0,
+            "negative_value_rows": 0,
+            "forming_candles": 0,
+            "future_timestamps": 0,
+            "gap_count": 0,
+            "estimated_missing_intervals": 0,
+            "gap_details": [],
+            "errors": [],
+            "warnings": [],
+        }
+
+        # Validate timeframe.
+        if timeframe not in TIMEFRAME_SECONDS:
+            result["errors"].append(
+                f"Unsupported timeframe: {timeframe}"
+            )
+            return result
+
+        # Validate DataFrame.
+        if not isinstance(df, pd.DataFrame):
+            result["errors"].append(
+                "Input must be a pandas DataFrame."
+            )
+            return result
+
+        if df.empty:
+            result["errors"].append(
+                "Historical dataset is empty."
+            )
+            return result
+
+        result["candle_count"] = len(df)
+
+        # Check required columns.
+        missing_columns = [
+            column
+            for column in self.REQUIRED_COLUMNS
+            if column not in df.columns
+        ]
+
+        if missing_columns:
+            result["errors"].append(
+                f"Missing required columns: {missing_columns}"
+            )
+            return result
+
+        # Work on a copy to protect the original dataset.
+        data = df.copy()
+
+        # Validate timestamp data type.
+        if not pd.api.types.is_datetime64_any_dtype(
+            data["time"]
+        ):
+            result["errors"].append(
+                "Timestamp column must contain datetime values."
+            )
+            return result
+
+        # Validate timezone.
+        if data["time"].dt.tz is None:
+            result["errors"].append(
+                "Timestamps must be timezone-aware."
+            )
+            return result
+
+        if str(data["time"].dt.tz) != "UTC":
+            result["errors"].append(
+                "Timestamps must use UTC timezone."
+            )
+            return result
+
+        # Check missing values.
+        result["missing_values"] = int(
+            data[self.REQUIRED_COLUMNS].isna().sum().sum()
+        )
+
+        if result["missing_values"] > 0:
+            result["errors"].append(
+                "Dataset contains missing values."
+            )
+
+        # Check duplicate timestamps.
+        result["duplicate_timestamps"] = int(
+            data["time"].duplicated().sum()
+        )
+
+        if result["duplicate_timestamps"] > 0:
+            result["errors"].append(
+                "Duplicate candle timestamps detected."
+            )
+
+        # Check chronological order.
+        time_differences = data["time"].diff()
+
+        result["non_chronological_pairs"] = int(
+            (time_differences < pd.Timedelta(0)).sum()
+        )
+
+        if result["non_chronological_pairs"] > 0:
+            result["errors"].append(
+                "Candle timestamps are not chronological."
+            )
+
+        # Check future timestamps.
+        current_time = datetime.now(timezone.utc)
+
+        result["future_timestamps"] = int(
+            (data["time"] > current_time).sum()
+        )
+
+        if result["future_timestamps"] > 0:
+            result["errors"].append(
+                "Dataset contains future timestamps."
+            )
+
+        # Validate numeric columns.
+        numeric_columns = (
+            self.PRICE_COLUMNS
+            + self.NON_NEGATIVE_COLUMNS
+        )
+
+        for column in numeric_columns:
+
+            if not pd.api.types.is_numeric_dtype(
+                data[column]
+            ):
+                result["errors"].append(
+                    f"Column {column} must contain numeric values."
+                )
+                return result
+
+        # Check non-finite numeric values.
+        numeric_data = data[numeric_columns].to_numpy(
+            dtype=float,
+            na_value=np.nan,
+        )
+
+        non_finite_mask = ~np.isfinite(numeric_data)
+
+        result["non_finite_values"] = int(
+            non_finite_mask.sum()
+        )
+
+        if result["non_finite_values"] > 0:
+            result["errors"].append(
+                "Dataset contains non-finite numeric values."
+            )
+
+        # Check positive prices.
+        price_data = data[self.PRICE_COLUMNS]
+
+        non_positive_mask = (
+            price_data <= 0
+        ).any(axis=1)
+
+        result["non_positive_price_rows"] = int(
+            non_positive_mask.sum()
+        )
+
+        if result["non_positive_price_rows"] > 0:
+            result["errors"].append(
+                "Dataset contains non-positive prices."
+            )
+
+        # Check OHLC consistency.
+        invalid_ohlc_mask = (
+            (data["high"] < data["open"])
+            | (data["high"] < data["close"])
+            | (data["high"] < data["low"])
+            | (data["low"] > data["open"])
+            | (data["low"] > data["close"])
+        )
+
+        invalid_ohlc_mask = (
+            invalid_ohlc_mask
+            & data[self.PRICE_COLUMNS].notna().all(axis=1)
+        )
+
+        result["invalid_ohlc_rows"] = int(
+            invalid_ohlc_mask.sum()
+        )
+
+        if result["invalid_ohlc_rows"] > 0:
+            result["errors"].append(
+                "Dataset contains invalid OHLC relationships."
+            )
+
+        # Check non-negative volume and spread.
+        negative_mask = (
+            data[self.NON_NEGATIVE_COLUMNS] < 0
+        ).any(axis=1)
+
+        negative_mask = (
+            negative_mask
+            & data[self.NON_NEGATIVE_COLUMNS].notna().all(axis=1)
+        )
+
+        result["negative_value_rows"] = int(
+            negative_mask.sum()
+        )
+
+        if result["negative_value_rows"] > 0:
+            result["errors"].append(
+                "Dataset contains negative volume or spread values."
+            )
+
+        # Check incomplete candles if the field is available.
+        if "is_forming_candle" in data.columns:
+
+            result["forming_candles"] = int(
+                data["is_forming_candle"].fillna(True).sum()
+            )
+
+            if result["forming_candles"] > 0:
+                result["errors"].append(
+                    "Dataset contains incomplete candles."
+                )
+
+        # Detect potential missing candle intervals.
+        # Use sorted unique timestamps so duplicates do not
+        # create misleading interval calculations.
+        unique_times = (
+            data["time"]
+            .dropna()
+            .drop_duplicates()
+            .sort_values()
+        )
+
+        expected_seconds = TIMEFRAME_SECONDS[timeframe]
+
+        intervals = unique_times.diff().dropna()
+
+        gap_intervals = intervals[
+            intervals > pd.Timedelta(
+                seconds=expected_seconds
+            )
+        ]
+
+        for index, gap in gap_intervals.items():
+
+            previous_time = unique_times.loc[
+                unique_times.index[
+                    unique_times.index.get_loc(index) - 1
+                ]
+            ]
+
+            missing_intervals = max(
+                int(gap.total_seconds() // expected_seconds) - 1,
+                1,
+            )
+
+            result["gap_details"].append({
+                "previous_candle": previous_time.isoformat(),
+                "next_candle": unique_times.loc[index].isoformat(),
+                "gap_seconds": int(gap.total_seconds()),
+                "estimated_missing_intervals": missing_intervals,
+            })
+
+        result["gap_count"] = len(
+            result["gap_details"]
+        )
+
+        result["estimated_missing_intervals"] = sum(
+            gap["estimated_missing_intervals"]
+            for gap in result["gap_details"]
+        )
+
+        if result["gap_count"] > 0:
+            result["warnings"].append(
+                "Potential candle gaps detected. "
+                "Review broker trading sessions and market closures."
+            )
+
+        # Determine final status.
+        if result["errors"]:
+            result["status"] = "FAIL"
+            result["valid"] = False
+
+        elif result["warnings"]:
+            result["status"] = "WARNING"
+            result["valid"] = True
+
+        else:
+            result["status"] = "PASS"
+            result["valid"] = True
+
+        return result
+
+
+====================================================================================================
+FILE: .\research\historical_storage.py
+====================================================================================================
+
+
+from pathlib import Path
+import re
+
+import pandas as pd
+
+from src.config import load_settings
+from src.logger import get_logger
+
+
+log = get_logger("HISTORICAL_STORAGE")
+
+
+class HistoricalDataStorage:
+    """
+    Stores and retrieves historical market data.
+
+    Features:
+    - Configurable output directory.
+    - Parquet storage for historical candle datasets.
+    - CSV storage for collection and validation reports.
+    - Separate raw data and report directories.
+    - Prevents accidental overwriting by default.
+    - Supports reading saved Parquet datasets.
+    - Does not modify the supplied DataFrame.
+    """
+
+    def __init__(self):
+        self.settings = load_settings()
+        self.config = self.settings["research"]["historical_data"]
+
+        self.storage_format = str(
+            self.config.get("storage_format", "parquet")
+        ).lower()
+
+        if self.storage_format != "parquet":
+            raise ValueError(
+                f"Unsupported storage format: {self.storage_format}"
+            )
+
+        self.output_directory = Path(
+            self.config.get(
+                "output_directory",
+                "data/historical"
+            )
+        )
+
+        self.raw_directory = self.output_directory / "raw"
+        self.reports_directory = self.output_directory / "reports"
+
+        self.raw_directory.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        self.reports_directory.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+    @staticmethod
+    def _validate_name(value, name):
+        """Validate a symbol or timeframe used in a filename."""
+
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{name} must be a non-empty string."
+            )
+
+        value = value.strip()
+
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            raise ValueError(
+                f"Invalid {name}: {value}"
+            )
+
+        return value
+
+    def _dataset_path(self, symbol, timeframe):
+        """Build the output path for one dataset."""
+
+        symbol = self._validate_name(symbol, "symbol")
+        timeframe = self._validate_name(timeframe, "timeframe")
+
+        symbol_directory = self.raw_directory / symbol
+
+        return (
+            symbol_directory
+            / f"{symbol}_{timeframe}.parquet"
+        )
+
+    def save_dataset(
+        self,
+        df,
+        symbol,
+        timeframe,
+        overwrite=False
+    ):
+        """
+        Save one historical candle dataset.
+
+        Args:
+            df: Historical candle DataFrame.
+            symbol: Resolved broker symbol.
+            timeframe: M5, M15, H1 or H4.
+            overwrite: Whether an existing dataset may be replaced.
+
+        Returns:
+            Path to the saved Parquet file.
+        """
+
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError(
+                "Dataset must be a pandas DataFrame."
+            )
+
+        if df.empty:
+            raise ValueError(
+                "Cannot save an empty historical dataset."
+            )
+
+        output_path = self._dataset_path(
+            symbol,
+            timeframe
+        )
+
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Dataset already exists: {output_path}. "
+                "Use overwrite=True to replace it."
+            )
+
+        try:
+            df.to_parquet(
+                output_path,
+                engine="pyarrow",
+                index=False
+            )
+
+        except Exception:
+            log.exception(
+                "Failed to save historical dataset | "
+                "Symbol=%s | Timeframe=%s",
+                symbol,
+                timeframe
+            )
+            raise
+
+        log.info(
+            "Historical dataset saved | "
+            "Symbol=%s | Timeframe=%s | "
+            "Candles=%s | Path=%s",
+            symbol,
+            timeframe,
+            len(df),
+            output_path
+        )
+
+        return output_path
+
+    def load_dataset(self, symbol, timeframe):
+        """
+        Load one previously saved historical dataset.
+
+        Returns:
+            pandas DataFrame.
+        """
+
+        input_path = self._dataset_path(
+            symbol,
+            timeframe
+        )
+
+        if not input_path.exists():
+            raise FileNotFoundError(
+                f"Historical dataset not found: {input_path}"
+            )
+
+        return pd.read_parquet(
+            input_path,
+            engine="pyarrow"
+        )
+
+    def save_report(
+        self,
+        report,
+        report_name,
+        overwrite=False
+    ):
+        """
+        Save a collection or validation report as CSV.
+
+        Args:
+            report: pandas DataFrame or list of dictionaries.
+            report_name: Report filename without extension.
+            overwrite: Whether an existing report may be replaced.
+
+        Returns:
+            Path to the saved CSV report.
+        """
+
+        report_name = self._validate_name(
+            report_name,
+            "report_name"
+        )
+
+        if isinstance(report, pd.DataFrame):
+            report_df = report.copy()
+
+        elif isinstance(report, list):
+            report_df = pd.DataFrame(report)
+
+        else:
+            raise TypeError(
+                "Report must be a DataFrame or a list of dictionaries."
+            )
+
+        if report_df.empty:
+            raise ValueError(
+                "Cannot save an empty report."
+            )
+
+        output_path = (
+            self.reports_directory
+            / f"{report_name}.csv"
+        )
+
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Report already exists: {output_path}. "
+                "Use overwrite=True to replace it."
+            )
+
+        report_df.to_csv(
+            output_path,
+            index=False
+        )
+
+        log.info(
+            "Research report saved | "
+            "Name=%s | Rows=%s | Path=%s",
+            report_name,
+            len(report_df),
+            output_path
+        )
+
+        return output_path
+
+
+====================================================================================================
+FILE: .\research\__init__.py
+====================================================================================================
+
+
+====================================================================================================
+FILE: .\tests\test_historical_data.py
+====================================================================================================
+
+
+import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock, patch
+
+import pandas as pd
+
+from research.historical_data import HistoricalDataCollector
+
+
+TEST_SETTINGS = {
+    "research": {
+        "historical_data": {
+            "enabled": True,
+            "history_days": 180,
+            "batch_size": 5000,
+            "storage_format": "parquet",
+            "output_directory": "data/historical",
+            "timezone": "UTC",
+            "exclude_forming_candles": True,
+        }
+    },
+    "market": {
+        "timeframes": {
+            "H4": "H4",
+            "H1": "H1",
+            "M15": "M15",
+            "M5": "M5",
+        }
+    },
+}
+
+
+def make_rate(timestamp):
+    """Create a mock MT5 candle record."""
+
+    return {
+        "time": int(timestamp.timestamp()),
+        "open": 1.1000,
+        "high": 1.1050,
+        "low": 1.0950,
+        "close": 1.1020,
+        "tick_volume": 100,
+        "spread": 10,
+        "real_volume": 0,
+    }
+
+
+class TestHistoricalDataCollector(unittest.TestCase):
+
+    def setUp(self):
+        self.settings_patcher = patch(
+            "research.historical_data.load_settings",
+            return_value=TEST_SETTINGS,
+        )
+
+        self.market_data_patcher = patch(
+            "research.historical_data.MarketData"
+        )
+
+        self.settings_patcher.start()
+        self.market_data_class = self.market_data_patcher.start()
+        self.market_data_mock = self.market_data_class.return_value
+
+        self.addCleanup(self.settings_patcher.stop)
+        self.addCleanup(self.market_data_patcher.stop)
+
+        self.collector = HistoricalDataCollector()
+
+        self.start = datetime(
+            2025, 1, 1, 0, 0,
+            tzinfo=timezone.utc,
+        )
+
+        self.end = datetime(
+            2025, 1, 1, 0, 10,
+            tzinfo=timezone.utc,
+        )
+
+        self.market_data_mock.enable_symbol.return_value = True
+
+    def test_accepts_timezone_aware_datetime(self):
+        result = self.collector._validate_datetime(
+            self.start,
+            "start",
+        )
+
+        self.assertEqual(result.tzinfo, timezone.utc)
+
+    def test_rejects_naive_datetime(self):
+        naive_datetime = datetime(2025, 1, 1, 0, 0)
+
+        with self.assertRaises(ValueError):
+            self.collector._validate_datetime(
+                naive_datetime,
+                "start",
+            )
+
+    def test_rejects_non_datetime_value(self):
+        with self.assertRaises(TypeError):
+            self.collector._validate_datetime(
+                "2025-01-01",
+                "start",
+            )
+
+    def test_rejects_invalid_date_range(self):
+        with self.assertRaises(ValueError):
+            self.collector.collect(
+                "EURUSD",
+                "M5",
+                self.end,
+                self.start,
+            )
+
+    def test_rejects_future_end_date(self):
+        future_end = (
+            datetime.now(timezone.utc)
+            + timedelta(days=1)
+        )
+
+        with self.assertRaises(ValueError):
+            self.collector.collect(
+                "EURUSD",
+                "M5",
+                self.start,
+                future_end,
+            )
+
+    def test_rejects_unsupported_timeframe(self):
+        with self.assertRaises(ValueError):
+            self.collector.collect(
+                "EURUSD",
+                "M1",
+                self.start,
+                self.end,
+            )
+
+    @patch("research.historical_data.mt5.copy_rates_range")
+    def test_excludes_candles_closing_after_requested_end(
+        self,
+        mock_copy_rates,
+    ):
+        timestamps = [
+            self.start,
+            self.start + timedelta(minutes=5),
+            self.start + timedelta(minutes=10),
+        ]
+
+        mock_copy_rates.return_value = [
+            make_rate(timestamp)
+            for timestamp in timestamps
+        ]
+
+        result = self.collector.collect(
+            "EURUSD",
+            "M5",
+            self.start,
+            self.end,
+        )
+
+        self.assertEqual(len(result), 2)
+
+        self.assertEqual(
+            result["time"].tolist(),
+            timestamps[:2],
+        )
+
+        self.assertTrue(
+            (result["is_forming_candle"] == False).all()
+        )
+
+    @patch("research.historical_data.mt5.copy_rates_range")
+    def test_preserves_duplicate_timestamps(
+        self,
+        mock_copy_rates,
+    ):
+        duplicate_time = self.start
+        second_time = self.start + timedelta(minutes=5)
+
+        mock_copy_rates.return_value = [
+            make_rate(duplicate_time),
+            make_rate(duplicate_time),
+            make_rate(second_time),
+        ]
+
+        result = self.collector.collect(
+            "EURUSD",
+            "M5",
+            self.start,
+            self.end,
+        )
+
+        self.assertEqual(len(result), 3)
+
+        self.assertEqual(
+            result["time"].duplicated().sum(),
+            1,
+        )
+
+    @patch("research.historical_data.mt5.copy_rates_range")
+    def test_retrieves_multiple_batches_without_losing_candles(
+        self,
+        mock_copy_rates,
+    ):
+        self.collector.batch_size = 2
+
+        first_candle = self.start
+        second_candle = self.start + timedelta(minutes=5)
+        third_candle = self.start + timedelta(minutes=10)
+
+        mock_copy_rates.side_effect = [
+            [
+                make_rate(first_candle),
+                make_rate(second_candle),
+            ],
+            [
+                make_rate(third_candle),
+            ],
+        ]
+
+        result = self.collector.collect(
+            "EURUSD",
+            "M5",
+            self.start,
+            self.end,
+        )
+
+        self.assertEqual(mock_copy_rates.call_count, 2)
+
+        self.assertEqual(
+            result["time"].tolist(),
+            [first_candle, second_candle],
+        )
+
+    @patch("research.historical_data.mt5.copy_rates_range")
+    def test_handles_empty_historical_results(
+        self,
+        mock_copy_rates,
+    ):
+        mock_copy_rates.return_value = []
+
+        result = self.collector.collect(
+            "EURUSD",
+            "M5",
+            self.start,
+            self.end,
+        )
+
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertTrue(result.empty)
+
+    @patch("research.historical_data.mt5.copy_rates_range")
+    def test_raises_error_when_mt5_retrieval_fails(
+        self,
+        mock_copy_rates,
+    ):
+        mock_copy_rates.return_value = None
+
+        with self.assertRaises(RuntimeError):
+            self.collector.collect(
+                "EURUSD",
+                "M5",
+                self.start,
+                self.end,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+====================================================================================================
+FILE: .\tests\test_historical_validation.py
+====================================================================================================
+
+
+import unittest
+
+import numpy as np
+import pandas as pd
+
+from research.historical_validation import HistoricalDataValidator
+
+
+class TestHistoricalDataValidator(unittest.TestCase):
+
+    def setUp(self):
+        self.validator = HistoricalDataValidator()
+
+        self.data = pd.DataFrame({
+            "time": pd.date_range(
+                "2025-01-01 00:00:00",
+                periods=3,
+                freq="5min",
+                tz="UTC",
+            ),
+            "open": [1.1000, 1.1010, 1.1020],
+            "high": [1.1050, 1.1060, 1.1070],
+            "low": [1.0950, 1.0960, 1.0970],
+            "close": [1.1020, 1.1030, 1.1040],
+            "tick_volume": [100, 120, 110],
+            "spread": [10, 10, 12],
+            "real_volume": [0, 0, 0],
+            "is_forming_candle": [False, False, False],
+        })
+
+    def test_valid_dataset_passes(self):
+        result = self.validator.validate(
+            self.data,
+            "M5",
+        )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["candle_count"], 3)
+
+    def test_empty_dataset_fails(self):
+        result = self.validator.validate(
+            pd.DataFrame(),
+            "M5",
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertFalse(result["valid"])
+
+    def test_invalid_timeframe_fails(self):
+        result = self.validator.validate(
+            self.data,
+            "M1",
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_missing_columns_fail(self):
+        data = self.data.drop(columns=["spread"])
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertTrue(
+            any("Missing required columns" in error
+                for error in result["errors"])
+        )
+
+    def test_naive_timestamps_fail(self):
+        data = self.data.copy()
+
+        data["time"] = (
+            data["time"].dt.tz_localize(None)
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_non_utc_timestamps_fail(self):
+        data = self.data.copy()
+
+        data["time"] = (
+            data["time"].dt.tz_convert("Africa/Blantyre")
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_duplicate_timestamps_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "time"] = data.loc[0, "time"]
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["duplicate_timestamps"],
+            1,
+        )
+
+    def test_unsorted_timestamps_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "time"] = (
+            data.loc[0, "time"] - pd.Timedelta(minutes=5)
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(
+            result["non_chronological_pairs"],
+            0,
+        )
+
+    def test_missing_values_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "close"] = np.nan
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(result["missing_values"], 0)
+
+    def test_non_finite_values_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "close"] = np.inf
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(
+            result["non_finite_values"],
+            0,
+        )
+
+    def test_non_positive_prices_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "close"] = 0
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["non_positive_price_rows"],
+            1,
+        )
+
+    def test_invalid_ohlc_relationships_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "high"] = 1.0900
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["invalid_ohlc_rows"],
+            1,
+        )
+
+    def test_negative_volume_fails(self):
+        data = self.data.copy()
+
+        data.loc[1, "tick_volume"] = -10
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["negative_value_rows"],
+            1,
+        )
+
+    def test_forming_candles_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "is_forming_candle"] = True
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["forming_candles"],
+            1,
+        )
+
+    def test_missing_candle_interval_produces_warning(self):
+        data = self.data.copy()
+
+        data.loc[2, "time"] = (
+            data.loc[2, "time"] + pd.Timedelta(minutes=10)
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "WARNING")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["gap_count"], 1)
+        self.assertEqual(
+            result["estimated_missing_intervals"],
+            2,
+        )
+
+    def test_future_timestamps_fail(self):
+        data = self.data.copy()
+
+        data.loc[2, "time"] = pd.Timestamp(
+            "2099-01-01 00:00:00",
+            tz="UTC",
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(
+            result["future_timestamps"],
+            0,
+        )
+
+    def test_original_dataset_is_not_modified(self):
+        original = self.data.copy(deep=True)
+
+        self.validator.validate(self.data, "M5")
+
+        pd.testing.assert_frame_equal(
+            self.data,
+            original,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+====================================================================================================
+FILE: .\tests\test_historical_storage.py
+====================================================================================================
+
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import pandas as pd
+
+from research.historical_storage import HistoricalDataStorage
+
+
+class TestHistoricalDataStorage(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.output_directory = Path(self.temp_directory.name)
+
+        self.config_patch = patch(
+            "research.historical_storage.load_settings",
+            return_value={
+                "research": {
+                    "historical_data": {
+                        "storage_format": "parquet",
+                        "output_directory": str(self.output_directory),
+                    }
+                }
+            }
+        )
+
+        self.config_patch.start()
+        self.addCleanup(self.config_patch.stop)
+
+        self.addCleanup(self.temp_directory.cleanup)
+
+        self.storage = HistoricalDataStorage()
+
+        self.sample_data = pd.DataFrame({
+            "time": pd.date_range(
+                "2025-01-01",
+                periods=3,
+                freq="5min",
+                tz="UTC"
+            ),
+            "open": [1.1000, 1.1005, 1.1010],
+            "high": [1.1010, 1.1015, 1.1020],
+            "low": [1.0995, 1.1000, 1.1005],
+            "close": [1.1005, 1.1010, 1.1015],
+            "tick_volume": [100, 120, 110],
+            "spread": [10, 11, 10],
+            "real_volume": [0, 0, 0],
+        })
+
+    def test_creates_storage_directories(self):
+        self.assertTrue(
+            (self.output_directory / "raw").is_dir()
+        )
+
+        self.assertTrue(
+            (self.output_directory / "reports").is_dir()
+        )
+
+    def test_saves_parquet_dataset(self):
+        output_path = self.storage.save_dataset(
+            self.sample_data,
+            "EURUSD",
+            "M5"
+        )
+
+        self.assertTrue(output_path.exists())
+        self.assertEqual(
+            output_path.name,
+            "EURUSD_M5.parquet"
+        )
+
+    def test_loads_saved_dataset(self):
+        self.storage.save_dataset(
+            self.sample_data,
+            "EURUSD",
+            "M5"
+        )
+
+        loaded_data = self.storage.load_dataset(
+            "EURUSD",
+            "M5"
+        )
+
+        pd.testing.assert_frame_equal(
+            loaded_data,
+            self.sample_data,
+            check_dtype=False
+        )
+
+    def test_prevents_overwriting_existing_dataset(self):
+        self.storage.save_dataset(
+            self.sample_data,
+            "EURUSD",
+            "M5"
+        )
+
+        with self.assertRaises(FileExistsError):
+            self.storage.save_dataset(
+                self.sample_data,
+                "EURUSD",
+                "M5"
+            )
+
+    def test_allows_explicit_dataset_overwrite(self):
+        self.storage.save_dataset(
+            self.sample_data,
+            "EURUSD",
+            "M5"
+        )
+
+        updated_data = self.sample_data.copy()
+        updated_data.loc[0, "close"] = 1.2000
+
+        self.storage.save_dataset(
+            updated_data,
+            "EURUSD",
+            "M5",
+            overwrite=True
+        )
+
+        loaded_data = self.storage.load_dataset(
+            "EURUSD",
+            "M5"
+        )
+
+        self.assertEqual(
+            loaded_data.loc[0, "close"],
+            1.2000
+        )
+
+    def test_rejects_empty_dataset(self):
+        with self.assertRaises(ValueError):
+            self.storage.save_dataset(
+                pd.DataFrame(),
+                "EURUSD",
+                "M5"
+            )
+
+    def test_rejects_invalid_dataset_type(self):
+        with self.assertRaises(TypeError):
+            self.storage.save_dataset(
+                [],
+                "EURUSD",
+                "M5"
+            )
+
+    def test_rejects_invalid_symbol_path(self):
+        with self.assertRaises(ValueError):
+            self.storage.save_dataset(
+                self.sample_data,
+                "../EURUSD",
+                "M5"
+            )
+
+    def test_does_not_modify_original_dataset(self):
+        original_data = self.sample_data.copy(deep=True)
+
+        self.storage.save_dataset(
+            self.sample_data,
+            "EURUSD",
+            "M5"
+        )
+
+        pd.testing.assert_frame_equal(
+            self.sample_data,
+            original_data
+        )
+
+    def test_saves_dataframe_report(self):
+        report = pd.DataFrame({
+            "symbol": ["EURUSD"],
+            "timeframe": ["M5"],
+            "status": ["PASS"],
+        })
+
+        output_path = self.storage.save_report(
+            report,
+            "validation_report"
+        )
+
+        self.assertTrue(output_path.exists())
+
+        loaded_report = pd.read_csv(output_path)
+
+        self.assertEqual(
+            loaded_report.loc[0, "status"],
+            "PASS"
+        )
+
+    def test_saves_list_report(self):
+        report = [
+            {
+                "symbol": "EURUSD",
+                "status": "PASS"
+            },
+            {
+                "symbol": "GBPUSD",
+                "status": "WARNING"
+            }
+        ]
+
+        output_path = self.storage.save_report(
+            report,
+            "collection_report"
+        )
+
+        self.assertTrue(output_path.exists())
+
+        loaded_report = pd.read_csv(output_path)
+
+        self.assertEqual(len(loaded_report), 2)
+
+    def test_prevents_overwriting_existing_report(self):
+        report = [
+            {"symbol": "EURUSD", "status": "PASS"}
+        ]
+
+        self.storage.save_report(
+            report,
+            "validation_report"
+        )
+
+        with self.assertRaises(FileExistsError):
+            self.storage.save_report(
+                report,
+                "validation_report"
+            )
+
+    def test_rejects_empty_report(self):
+        with self.assertRaises(ValueError):
+            self.storage.save_report(
+                [],
+                "empty_report"
+            )
+
+    def test_rejects_invalid_report_type(self):
+        with self.assertRaises(TypeError):
+            self.storage.save_report(
+                "invalid report",
+                "validation_report"
+            )
+
+    def test_rejects_missing_dataset(self):
+        with self.assertRaises(FileNotFoundError):
+            self.storage.load_dataset(
+                "EURUSD",
+                "M5"
+            )
+
+    def test_rejects_invalid_storage_format(self):
+        with patch(
+            "research.historical_storage.load_settings",
+            return_value={
+                "research": {
+                    "historical_data": {
+                        "storage_format": "csv",
+                        "output_directory": str(self.output_directory),
+                    }
+                }
+            }
+        ):
+            with self.assertRaises(ValueError):
+                HistoricalDataStorage()
+
+
+if __name__ == "__main__":
+    unittest.main()
+

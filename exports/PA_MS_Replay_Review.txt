@@ -1,0 +1,3556 @@
+PA-MS TRADING BOT - REPLAY REVIEW EXPORT
+Generated: 2026-11-11 12:58:44
+Project: C:\Users\tembo\Documents\Forex Folder\PA_MS_Trading_Bot_Phase1
+
+==========================================================================================
+FILE: research\historical_strategy_replay.py
+==========================================================================================
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+import pandas as pd
+
+from research.historical_storage import HistoricalDataStorage
+from strategy.strategy_orchestrator import StrategyOrchestrator
+
+
+@dataclass(frozen=True)
+class ReplayAssessment:
+    """Compact record of one historical strategy assessment."""
+
+    assessment_time: pd.Timestamp
+    alignment: object
+    qualified_setup_count: int
+    confirmed_setup_count: int
+    waiting_setup_count: int
+    expired_setup_count: int
+    rejected_setup_count: int
+
+
+@dataclass(frozen=True)
+class HistoricalReplayResult:
+    """Summary and assessment records from a historical replay."""
+
+    symbol: str
+    start_time: Optional[pd.Timestamp]
+    end_time: Optional[pd.Timestamp]
+    assessment_count: int
+    skipped_insufficient_history: int
+    skipped_stale_data: int
+    assessments: tuple[ReplayAssessment, ...]
+
+    @property
+    def total_qualified_setups(self) -> int:
+        return sum(item.qualified_setup_count for item in self.assessments)
+
+    @property
+    def total_confirmed_setups(self) -> int:
+        return sum(item.confirmed_setup_count for item in self.assessments)
+
+    @property
+    def total_waiting_setups(self) -> int:
+        return sum(item.waiting_setup_count for item in self.assessments)
+
+    @property
+    def total_expired_setups(self) -> int:
+        return sum(item.expired_setup_count for item in self.assessments)
+
+    @property
+    def total_rejected_setups(self) -> int:
+        return sum(item.rejected_setup_count for item in self.assessments)
+
+
+class HistoricalStrategyReplay:
+    """
+    Replays historical candles through the existing strategy pipeline.
+
+    Each assessment uses only candles whose closing times are at or before
+    the assessment timestamp. No future candles are passed to the strategy.
+
+    This component evaluates strategy signals. It does not simulate orders,
+    entries, stop losses, take profits, or trade execution.
+    """
+
+    TIMEFRAME_MINUTES = {
+        "H4": 240,
+        "H1": 60,
+        "M15": 15,
+        "M5": 5,
+    }
+
+    def __init__(
+        self,
+        storage=None,
+        strategy_orchestrator=None,
+        minimum_candles=None,
+    ):
+        self.storage = (
+            storage if storage is not None else HistoricalDataStorage()
+        )
+        self.strategy_orchestrator = (
+            strategy_orchestrator
+            if strategy_orchestrator is not None
+            else StrategyOrchestrator()
+        )
+
+        defaults = {
+            "H4": 20,
+            "H1": 20,
+            "M15": 20,
+            "M5": 20,
+        }
+
+        if minimum_candles is not None:
+            unknown = set(minimum_candles) - set(defaults)
+            if unknown:
+                raise ValueError(
+                    f"Unsupported timeframe(s): {sorted(unknown)}"
+                )
+
+            for timeframe, count in minimum_candles.items():
+                if not isinstance(count, int) or count < 1:
+                    raise ValueError(
+                        f"Minimum candle count for {timeframe} "
+                        "must be a positive integer."
+                    )
+                defaults[timeframe] = count
+
+        self.minimum_candles = defaults
+
+    @staticmethod
+    def _normalize_datetime(value, field_name):
+        if value is None:
+            return None
+
+        timestamp = pd.Timestamp(value)
+
+        if timestamp.tzinfo is None:
+            raise ValueError(
+                f"{field_name} must be timezone-aware."
+            )
+
+        return timestamp.tz_convert("UTC")
+
+    @staticmethod
+    def _validate_dataset(data, timeframe):
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError(
+                f"{timeframe} dataset must be a pandas DataFrame."
+            )
+
+        if data.empty:
+            raise ValueError(
+                f"{timeframe} historical dataset is empty."
+            )
+
+        required_columns = {
+            "time", "open", "high", "low", "close"
+        }
+
+        missing = required_columns - set(data.columns)
+
+        if missing:
+            raise ValueError(
+                f"{timeframe} dataset is missing columns: "
+                f"{sorted(missing)}"
+            )
+
+        if data["time"].isna().any():
+            raise ValueError(
+                f"{timeframe} dataset contains missing timestamps."
+            )
+
+        timestamps = pd.to_datetime(data["time"], utc=True)
+
+        if timestamps.duplicated().any():
+            raise ValueError(
+                f"{timeframe} dataset contains duplicate timestamps."
+            )
+
+        if not timestamps.is_monotonic_increasing:
+            raise ValueError(
+                f"{timeframe} dataset is not chronologically ordered."
+            )
+
+        result = data.copy()
+        result["time"] = timestamps
+
+        return result
+
+    @staticmethod
+    def _latest_contiguous_m5_segment(completed_m5):
+        """
+        Return the latest uninterrupted sequence of completed M5 candles.
+
+        A new segment begins whenever adjacent candle opening timestamps
+        are not exactly five minutes apart. This handles weekend closures
+        and missing historical candles without weakening detector validation.
+        """
+
+        if completed_m5.empty:
+            return completed_m5.copy()
+
+        result = completed_m5.reset_index(drop=True).copy()
+
+        expected_interval = pd.Timedelta(minutes=5)
+        differences = result["time"].diff()
+
+        gap_positions = [
+            position
+            for position, difference in enumerate(differences)
+            if position > 0 and difference != expected_interval
+        ]
+
+        if gap_positions:
+            latest_segment_start = gap_positions[-1]
+            result = result.iloc[latest_segment_start:].copy()
+
+        return result.reset_index(drop=True)
+
+    def load_datasets(self, symbol):
+        """Load and validate all four historical timeframe datasets."""
+
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("Symbol must be a non-empty string.")
+
+        datasets = {}
+
+        for timeframe in self.TIMEFRAME_MINUTES:
+            data = self.storage.load_dataset(
+                symbol.strip(), timeframe
+            )
+            datasets[timeframe] = self._validate_dataset(
+                data, timeframe
+            )
+
+        return datasets
+
+    @classmethod
+    def _completed_candles(
+        cls,
+        data,
+        timeframe,
+        assessment_time,
+    ):
+        duration = pd.Timedelta(
+            minutes=cls.TIMEFRAME_MINUTES[timeframe]
+        )
+
+        closing_times = data["time"] + duration
+
+        completed_mask = closing_times <= assessment_time
+
+        if "is_forming_candle" in data.columns:
+            completed_mask &= ~data["is_forming_candle"].fillna(
+                True
+            ).astype(bool)
+
+        return data.loc[completed_mask].copy()
+
+    def _assess(
+        self,
+        datasets,
+        assessment_time,
+    ):
+        synchronized_inputs = {}
+
+        for timeframe, data in datasets.items():
+            completed = self._completed_candles(
+                data,
+                timeframe,
+                assessment_time,
+            )
+
+            if timeframe == "M5":
+                completed = self._latest_contiguous_m5_segment(
+                    completed
+                )
+
+            if len(completed) < self.minimum_candles[timeframe]:
+                return None, "insufficient_history"
+
+            latest_close = (
+                completed["time"].iloc[-1]
+                + pd.Timedelta(
+                    minutes=self.TIMEFRAME_MINUTES[timeframe]
+                )
+            )
+
+            maximum_age = pd.Timedelta(
+                minutes=self.TIMEFRAME_MINUTES[timeframe]
+            )
+
+            if assessment_time - latest_close > maximum_age:
+                return None, "stale_data"
+
+            synchronized_inputs[timeframe] = completed
+
+        pipeline_result = self.strategy_orchestrator.analyze(
+            h4_candles=synchronized_inputs["H4"],
+            h1_candles=synchronized_inputs["H1"],
+            m15_candles=synchronized_inputs["M15"],
+            m5_candles=synchronized_inputs["M5"],
+            assessment_time=assessment_time,
+        )
+
+        assessment = ReplayAssessment(
+            assessment_time=assessment_time,
+            alignment=pipeline_result.alignment,
+            qualified_setup_count=len(
+                pipeline_result.qualified_setups
+            ),
+            confirmed_setup_count=len(
+                pipeline_result.confirmed_setups
+            ),
+            waiting_setup_count=len(
+                pipeline_result.waiting_setups
+            ),
+            expired_setup_count=len(
+                pipeline_result.expired_setups
+            ),
+            rejected_setup_count=len(
+                pipeline_result.rejected_setups
+            ),
+        )
+
+        return assessment, None
+
+    def run(
+        self,
+        symbol="EURUSD",
+        start_time=None,
+        end_time=None,
+        assessment_interval=1,
+        max_assessments=None,
+    ):
+        """
+        Replay the strategy chronologically using completed M5 candles.
+
+        assessment_interval=1 evaluates every completed M5 candle.
+        Larger values reduce the number of assessments for quicker trials.
+        """
+
+        if (
+            not isinstance(assessment_interval, int)
+            or assessment_interval < 1
+        ):
+            raise ValueError(
+                "assessment_interval must be a positive integer."
+            )
+
+        if max_assessments is not None:
+            if (
+                not isinstance(max_assessments, int)
+                or max_assessments < 1
+            ):
+                raise ValueError(
+                    "max_assessments must be a positive integer."
+                )
+
+        start = self._normalize_datetime(
+            start_time, "start_time"
+        )
+        end = self._normalize_datetime(
+            end_time, "end_time"
+        )
+
+        if start is not None and end is not None and start > end:
+            raise ValueError(
+                "start_time cannot be later than end_time."
+            )
+
+        datasets = self.load_datasets(symbol)
+        m5_data = datasets["M5"]
+
+        m5_closes = (
+            m5_data["time"]
+            + pd.Timedelta(minutes=self.TIMEFRAME_MINUTES["M5"])
+        )
+
+        candidate_times = m5_closes.drop_duplicates().sort_values()
+
+        if start is not None:
+            candidate_times = candidate_times[
+                candidate_times >= start
+            ]
+
+        if end is not None:
+            candidate_times = candidate_times[
+                candidate_times <= end
+            ]
+
+        assessments = []
+        skipped_insufficient = 0
+        skipped_stale = 0
+        processed_candidates = 0
+
+        for assessment_time in candidate_times:
+            processed_candidates += 1
+
+            if (
+                processed_candidates - 1
+            ) % assessment_interval != 0:
+                continue
+
+            assessment_time = pd.Timestamp(
+                assessment_time
+            ).tz_convert("UTC")
+
+            assessment, skip_reason = self._assess(
+                datasets,
+                assessment_time,
+            )
+
+            if skip_reason == "insufficient_history":
+                skipped_insufficient += 1
+                continue
+
+            if skip_reason == "stale_data":
+                skipped_stale += 1
+                continue
+
+            assessments.append(assessment)
+
+            if (
+                max_assessments is not None
+                and len(assessments) >= max_assessments
+            ):
+                break
+
+        actual_start = (
+            assessments[0].assessment_time
+            if assessments else None
+        )
+        actual_end = (
+            assessments[-1].assessment_time
+            if assessments else None
+        )
+
+        return HistoricalReplayResult(
+            symbol=symbol.strip(),
+            start_time=actual_start,
+            end_time=actual_end,
+            assessment_count=len(assessments),
+            skipped_insufficient_history=skipped_insufficient,
+            skipped_stale_data=skipped_stale,
+            assessments=tuple(assessments),
+        )
+
+
+==========================================================================================
+FILE: strategy\strategy_orchestrator.py
+==========================================================================================
+
+"""Coordinates the H4, H1, M15 and M5 strategy analysis pipeline.
+
+The orchestrator synchronizes and validates candle data before passing it
+through the existing market structure, M15 setup and M5 confirmation
+components.
+
+It is analysis-only. It does not calculate trade execution parameters,
+place orders, modify positions or manage open trades.
+"""
+
+from dataclasses import dataclass
+from typing import Any
+
+from research.swing_detection.market_structure_engine import (
+    MarketStructureEngine,
+)
+from strategy.m15_setup_detector import (
+    M15SetupDetector,
+    M15SetupResult,
+)
+from strategy.m5_confirmation_detector import (
+    M5ConfirmationDetector,
+    M5ConfirmationResult,
+)
+from strategy.timeframe_data_synchronizer import (
+    SynchronizedTimeframeData,
+    TimeframeDataSynchronizer,
+)
+
+
+@dataclass(frozen=True)
+class StrategyPipelineResult:
+    """Consolidated output from the multi-timeframe strategy pipeline."""
+
+    assessment_time: Any
+    multi_timeframe_analysis: Any
+    m15_market_structure: Any
+    m15_setups: M15SetupResult
+    m5_market_structure: Any
+    m5_confirmations: M5ConfirmationResult
+    synchronized_data: SynchronizedTimeframeData
+
+    @property
+    def alignment(self):
+        return self.multi_timeframe_analysis.alignment
+
+    @property
+    def qualified_setups(self):
+        return self.m15_setups.qualified_setups
+
+    @property
+    def confirmed_setups(self):
+        return self.m5_confirmations.confirmed
+
+    @property
+    def waiting_setups(self):
+        return self.m5_confirmations.waiting
+
+    @property
+    def expired_setups(self):
+        return self.m5_confirmations.expired
+
+    @property
+    def rejected_setups(self):
+        return self.m5_confirmations.rejected
+
+
+class StrategyOrchestrator:
+    """Coordinates synchronized multi-timeframe strategy analysis."""
+
+    def __init__(
+        self,
+        market_structure_engine=None,
+        m15_setup_detector=None,
+        m5_confirmation_detector=None,
+        timeframe_data_synchronizer=None,
+    ):
+        self.market_structure_engine = (
+            market_structure_engine
+            if market_structure_engine is not None
+            else MarketStructureEngine()
+        )
+
+        self.m15_setup_detector = (
+            m15_setup_detector
+            if m15_setup_detector is not None
+            else M15SetupDetector()
+        )
+
+        self.m5_confirmation_detector = (
+            m5_confirmation_detector
+            if m5_confirmation_detector is not None
+            else M5ConfirmationDetector()
+        )
+
+        self.timeframe_data_synchronizer = (
+            timeframe_data_synchronizer
+            if timeframe_data_synchronizer is not None
+            else TimeframeDataSynchronizer()
+        )
+
+    def analyze(
+        self,
+        h4_candles,
+        h1_candles,
+        m15_candles,
+        m5_candles,
+        assessment_time,
+    ) -> StrategyPipelineResult:
+        """Synchronize candle data and execute the complete strategy pipeline."""
+
+        synchronized_data = (
+            self.timeframe_data_synchronizer.synchronize(
+                h4_candles=h4_candles,
+                h1_candles=h1_candles,
+                m15_candles=m15_candles,
+                m5_candles=m5_candles,
+                assessment_time=assessment_time,
+            )
+        )
+
+        synchronized_assessment_time = (
+            synchronized_data.assessment_time
+        )
+
+        synchronized_h4 = synchronized_data.h4_candles
+        synchronized_h1 = synchronized_data.h1_candles
+        synchronized_m15 = synchronized_data.m15_candles
+        synchronized_m5 = synchronized_data.m5_candles
+
+        multi_timeframe_analysis = (
+            self.market_structure_engine.analyze_multi_timeframe(
+                h4_candles=synchronized_h4,
+                h1_candles=synchronized_h1,
+                assessment_time=synchronized_assessment_time,
+            )
+        )
+
+        m15_market_structure = (
+            self.market_structure_engine.analyze(
+                synchronized_m15,
+                timeframe="M15",
+            )
+        )
+
+        m15_setups = self.m15_setup_detector.detect(
+            candles=synchronized_m15,
+            market_structure=m15_market_structure,
+            h4_snapshots=(
+                multi_timeframe_analysis.h4_analysis.trend_snapshots
+            ),
+            h1_snapshots=(
+                multi_timeframe_analysis.h1_analysis.trend_snapshots
+            ),
+        )
+
+        m5_market_structure = (
+            self.market_structure_engine.analyze(
+                synchronized_m5,
+                timeframe="M5",
+            )
+        )
+
+        m5_confirmations = self.m5_confirmation_detector.detect(
+            m15_setups=m15_setups,
+            m5_candles=synchronized_m5,
+            m5_market_structure=m5_market_structure,
+        )
+
+        return StrategyPipelineResult(
+            assessment_time=synchronized_assessment_time,
+            multi_timeframe_analysis=multi_timeframe_analysis,
+            m15_market_structure=m15_market_structure,
+            m15_setups=m15_setups,
+            m5_market_structure=m5_market_structure,
+            m5_confirmations=m5_confirmations,
+            synchronized_data=synchronized_data,
+        )
+
+
+==========================================================================================
+FILE: strategy\timeframe_data_synchronizer.py
+==========================================================================================
+
+"""Validates and synchronises H4, H1, M15 and M5 candle datasets.
+
+The synchronizer:
+- Requires timezone-aware candle timestamps.
+- Converts timestamps to UTC.
+- Rejects duplicate or chronologically unordered candles.
+- Excludes candles that have not closed by assessment_time.
+- Checks the age of the latest completed candle.
+- Returns independent copies of the validated candle datasets.
+
+This component does not fetch market data or execute trades.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+import pandas as pd
+
+
+@dataclass(frozen=True)
+class SynchronizedTimeframeData:
+    """Validated candle datasets for the four strategy timeframes."""
+
+    assessment_time: pd.Timestamp
+    h4_candles: pd.DataFrame
+    h1_candles: pd.DataFrame
+    m15_candles: pd.DataFrame
+    m5_candles: pd.DataFrame
+    latest_candle_close_times: dict
+
+
+class TimeframeDataSynchronizer:
+    """Validates and synchronises four timeframe candle datasets."""
+
+    TIMEFRAME_DURATIONS = {
+        "H4": pd.Timedelta(hours=4),
+        "H1": pd.Timedelta(hours=1),
+        "M15": pd.Timedelta(minutes=15),
+        "M5": pd.Timedelta(minutes=5),
+    }
+
+    def __init__(self, max_age_by_timeframe: Optional[dict] = None):
+        """Initialise timeframe freshness limits.
+
+        By default, the maximum permitted age of the latest completed
+        candle is one timeframe duration.
+
+        Custom limits can be supplied as a dictionary, for example:
+
+            {
+                "H4": pd.Timedelta(hours=8),
+                "H1": pd.Timedelta(hours=2),
+                "M15": pd.Timedelta(minutes=30),
+                "M5": pd.Timedelta(minutes=10),
+            }
+        """
+
+        self.max_age_by_timeframe = {}
+
+        supplied_limits = max_age_by_timeframe or {}
+
+        unknown_timeframes = (
+            set(supplied_limits) - set(self.TIMEFRAME_DURATIONS)
+        )
+
+        if unknown_timeframes:
+            raise ValueError(
+                "Unsupported timeframe freshness limits: "
+                f"{sorted(unknown_timeframes)}"
+            )
+
+        for timeframe, duration in self.TIMEFRAME_DURATIONS.items():
+            maximum_age = supplied_limits.get(
+                timeframe,
+                duration,
+            )
+
+            try:
+                maximum_age = pd.Timedelta(maximum_age)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid maximum age for {timeframe}."
+                ) from exc
+
+            if pd.isna(maximum_age) or maximum_age <= pd.Timedelta(0):
+                raise ValueError(
+                    f"Maximum age for {timeframe} must be positive."
+                )
+
+            self.max_age_by_timeframe[timeframe] = maximum_age
+
+    @staticmethod
+    def _normalise_assessment_time(assessment_time) -> pd.Timestamp:
+        """Validate assessment_time and convert it to UTC."""
+
+        try:
+            timestamp = pd.Timestamp(assessment_time)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "assessment_time must be a valid timestamp."
+            ) from exc
+
+        if pd.isna(timestamp):
+            raise ValueError(
+                "assessment_time cannot be NaT."
+            )
+
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError(
+                "assessment_time must be timezone-aware."
+            )
+
+        return timestamp.tz_convert("UTC")
+
+    @staticmethod
+    def _normalise_candle_times(
+        candles: pd.DataFrame,
+        timeframe: str,
+    ) -> pd.DataFrame:
+        """Validate candle timestamps and return a normalised copy."""
+
+        if not isinstance(candles, pd.DataFrame):
+            raise TypeError(
+                f"{timeframe} candles must be a pandas DataFrame."
+            )
+
+        if candles.empty:
+            raise ValueError(
+                f"{timeframe} candle data cannot be empty."
+            )
+
+        if "time" not in candles.columns:
+            raise ValueError(
+                f"{timeframe} candles must contain a 'time' column."
+            )
+
+        normalised = candles.copy()
+
+        timestamps = []
+
+        for index, value in normalised["time"].items():
+            try:
+                timestamp = pd.Timestamp(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{timeframe} contains an invalid timestamp "
+                    f"at index {index}."
+                ) from exc
+
+            if pd.isna(timestamp):
+                raise ValueError(
+                    f"{timeframe} contains a missing timestamp "
+                    f"at index {index}."
+                )
+
+            if (
+                timestamp.tzinfo is None
+                or timestamp.utcoffset() is None
+            ):
+                raise ValueError(
+                    f"{timeframe} contains a timezone-naive timestamp "
+                    f"at index {index}."
+                )
+
+            timestamps.append(timestamp.tz_convert("UTC"))
+
+        normalised["time"] = pd.Series(
+            pd.DatetimeIndex(timestamps),
+            index=normalised.index,
+        )
+
+        if normalised["time"].duplicated().any():
+            raise ValueError(
+                f"{timeframe} contains duplicate candle timestamps."
+            )
+
+        if not normalised["time"].is_monotonic_increasing:
+            raise ValueError(
+                f"{timeframe} candle timestamps must be "
+                "in chronological order."
+            )
+
+        return normalised
+
+    def _process_timeframe(
+        self,
+        candles: pd.DataFrame,
+        timeframe: str,
+        assessment_time: pd.Timestamp,
+    ):
+        """Filter completed candles and validate their freshness."""
+
+        if timeframe not in self.TIMEFRAME_DURATIONS:
+            raise ValueError(
+                f"Unsupported timeframe: {timeframe}"
+            )
+
+        normalised = self._normalise_candle_times(
+            candles=candles,
+            timeframe=timeframe,
+        )
+
+        candle_duration = self.TIMEFRAME_DURATIONS[timeframe]
+
+        # Candle timestamps represent opening times.
+        # A candle is completed only when its closing time is
+        # at or before the assessment time.
+        candle_close_times = (
+            normalised["time"] + candle_duration
+        )
+
+        completed_mask = candle_close_times <= assessment_time
+
+        completed_candles = normalised.loc[
+            completed_mask
+        ].copy()
+
+        if completed_candles.empty:
+            raise ValueError(
+                f"{timeframe} has no completed candles at "
+                "the supplied assessment_time."
+            )
+
+        latest_candle_open = completed_candles["time"].iloc[-1]
+
+        latest_candle_close = (
+            latest_candle_open + candle_duration
+        )
+
+        candle_age = (
+            assessment_time - latest_candle_close
+        )
+
+        maximum_age = self.max_age_by_timeframe[timeframe]
+
+        if candle_age > maximum_age:
+            raise ValueError(
+                f"{timeframe} candle data is stale. "
+                f"Latest candle closed at "
+                f"{latest_candle_close.isoformat()}, "
+                f"assessment time is {assessment_time.isoformat()}, "
+                f"and maximum permitted age is {maximum_age}."
+            )
+
+        return completed_candles, latest_candle_close
+
+    def synchronize(
+        self,
+        h4_candles: pd.DataFrame,
+        h1_candles: pd.DataFrame,
+        m15_candles: pd.DataFrame,
+        m5_candles: pd.DataFrame,
+        assessment_time,
+    ) -> SynchronizedTimeframeData:
+        """Validate and synchronise all four timeframe datasets."""
+
+        normalised_assessment_time = (
+            self._normalise_assessment_time(assessment_time)
+        )
+
+        candle_inputs = {
+            "H4": h4_candles,
+            "H1": h1_candles,
+            "M15": m15_candles,
+            "M5": m5_candles,
+        }
+
+        processed = {}
+        latest_close_times = {}
+
+        for timeframe, candles in candle_inputs.items():
+            completed_candles, latest_close = (
+                self._process_timeframe(
+                    candles=candles,
+                    timeframe=timeframe,
+                    assessment_time=normalised_assessment_time,
+                )
+            )
+
+            processed[timeframe] = completed_candles
+            latest_close_times[timeframe] = latest_close
+
+        return SynchronizedTimeframeData(
+            assessment_time=normalised_assessment_time,
+            h4_candles=processed["H4"],
+            h1_candles=processed["H1"],
+            m15_candles=processed["M15"],
+            m5_candles=processed["M5"],
+            latest_candle_close_times=latest_close_times,
+        )
+
+
+
+==========================================================================================
+FILE: strategy\m5_confirmation_detector.py
+==========================================================================================
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import hashlib
+from typing import Literal, Optional
+
+import pandas as pd
+
+from research.swing_detection.break_models import StructureBreak
+from research.swing_detection.market_structure_engine import (
+    MarketStructureResult,
+)
+from strategy.m15_setup_detector import (
+    M15Setup,
+    M15SetupResult,
+)
+
+
+M5ConfirmationState = Literal[
+    "WAITING",
+    "CONFIRMED",
+    "EXPIRED",
+    "REJECTED",
+]
+
+
+@dataclass(frozen=True)
+class M5Confirmation:
+    setup_id: str
+    direction: str
+    state: M5ConfirmationState
+    qualification_time: Optional[datetime]
+    confirmation_time: Optional[datetime]
+    confirmation_break_time: Optional[datetime]
+    confirmation_break_index: Optional[int]
+    confirmation_event: Optional[StructureBreak]
+    candles_elapsed: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class M5ConfirmationResult:
+    confirmations: tuple[M5Confirmation, ...]
+
+    @property
+    def confirmed(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item for item in self.confirmations
+            if item.state == "CONFIRMED"
+        )
+
+    @property
+    def waiting(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item for item in self.confirmations
+            if item.state == "WAITING"
+        )
+
+    @property
+    def expired(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item for item in self.confirmations
+            if item.state == "EXPIRED"
+        )
+
+    @property
+    def rejected(self) -> tuple[M5Confirmation, ...]:
+        return tuple(
+            item for item in self.confirmations
+            if item.state == "REJECTED"
+        )
+
+
+class M5ConfirmationDetector:
+    """
+    Confirms qualified M15 setups using existing M5 BOS events.
+
+    The detector:
+    - Accepts only QUALIFIED M15 setups.
+    - Requires an M5 BOS in the same direction.
+    - Ignores M5 BOS events before M15 qualification.
+    - Uses a maximum window of 12 eligible M5 candles.
+    - Selects the earliest matching BOS.
+    - Does not calculate BOS independently.
+    - Does not place or manage trades.
+
+    All supplied M5 candles must be completed candles.
+    """
+
+    TIMEFRAME_DURATION = timedelta(minutes=5)
+
+    def __init__(self, confirmation_window_candles: int = 12):
+        if (
+            not isinstance(confirmation_window_candles, int)
+            or isinstance(confirmation_window_candles, bool)
+            or confirmation_window_candles < 1
+        ):
+            raise ValueError(
+                "confirmation_window_candles must be a positive integer."
+            )
+
+        self.confirmation_window_candles = confirmation_window_candles
+
+    @staticmethod
+    def _to_utc_datetime(value, field_name: str) -> datetime:
+        timestamp = pd.Timestamp(value)
+
+        if pd.isna(timestamp):
+            raise ValueError(f"{field_name} cannot be NaT.")
+
+        if timestamp.tzinfo is None:
+            raise ValueError(
+                f"{field_name} must be timezone-aware."
+            )
+
+        return timestamp.to_pydatetime().astimezone(timezone.utc)
+
+    @classmethod
+    def _setup_identity(
+        cls,
+        setup,
+        qualification_time: Optional[datetime],
+    ) -> str:
+        break_time = cls._to_utc_datetime(
+            setup.break_time,
+            "M15 setup break_time",
+        )
+
+        identity_parts = (
+            str(setup.direction),
+            break_time.isoformat(),
+            str(setup.break_index),
+            str(float(setup.broken_level)),
+            (
+                qualification_time.isoformat()
+                if qualification_time is not None
+                else "NOT_QUALIFIED"
+            ),
+        )
+
+        raw_identity = "|".join(identity_parts)
+        return hashlib.sha256(
+            raw_identity.encode("utf-8")
+        ).hexdigest()[:20]
+
+    @staticmethod
+    def _validate_inputs(
+        m15_setups: M15SetupResult,
+        m5_candles: pd.DataFrame,
+        m5_market_structure: MarketStructureResult,
+    ) -> None:
+        if not hasattr(m15_setups, "setups"):
+            raise TypeError(
+                "m15_setups must provide a setups collection."
+            )
+
+        if not isinstance(m5_candles, pd.DataFrame):
+            raise TypeError("m5_candles must be a pandas DataFrame.")
+
+        if "time" not in m5_candles.columns:
+            raise ValueError(
+                "m5_candles must contain a 'time' column."
+            )
+
+        if not hasattr(m5_market_structure, "bos_events"):
+            raise TypeError(
+                "m5_market_structure must provide bos_events."
+            )
+
+        timeframe = str(
+            getattr(m5_market_structure, "timeframe", "")
+        ).upper()
+
+        if timeframe not in {"M5", "5M"} and not timeframe.endswith(".M5"):
+            raise ValueError(
+                "m5_market_structure must represent the M5 timeframe."
+            )
+
+        if len(m5_candles) != getattr(
+            m5_market_structure, "candle_count", len(m5_candles)
+        ):
+            raise ValueError(
+                "M5 candle count does not match market structure candle_count."
+            )
+
+        candle_times = [
+            M5ConfirmationDetector._to_utc_datetime(
+                value,
+                f"M5 candle time at index {index}",
+            )
+            for index, value in enumerate(m5_candles["time"])
+        ]
+
+        if any(
+            current <= previous
+            for previous, current in zip(
+                candle_times,
+                candle_times[1:],
+            )
+        ):
+            raise ValueError(
+                "M5 candle timestamps must be strictly increasing."
+            )
+
+        if len(set(candle_times)) != len(candle_times):
+            raise ValueError("Duplicate M5 candle timestamps detected.")
+
+        for previous, current in zip(
+            candle_times,
+            candle_times[1:],
+        ):
+            if current - previous != timedelta(minutes=5):
+                raise ValueError(
+                    "M5 candle timestamps must be spaced exactly 5 minutes apart."
+                )
+
+    @staticmethod
+    def _validate_bos_events(
+        bos_events,
+        candle_times: list[datetime],
+    ) -> None:
+        for event in bos_events:
+            if event.event_type != "BOS":
+                raise ValueError(
+                    "m5_market_structure.bos_events must contain BOS events only."
+                )
+
+            if event.direction not in {"BULLISH", "BEARISH"}:
+                raise ValueError(
+                    "BOS direction must be BULLISH or BEARISH."
+                )
+
+            if (
+                not isinstance(event.break_index, int)
+                or isinstance(event.break_index, bool)
+                or not 0 <= event.break_index < len(candle_times)
+            ):
+                raise ValueError(
+                    "BOS break_index is outside the M5 candle range."
+                )
+
+            event_time = M5ConfirmationDetector._to_utc_datetime(
+                event.break_time,
+                "BOS break_time",
+            )
+
+            expected_time = candle_times[event.break_index]
+
+            if event_time != expected_time:
+                raise ValueError(
+                    "BOS break_time must match the opening time of its indexed M5 candle."
+                )
+
+    @staticmethod
+    def _rejected(
+        setup_id: str,
+        direction: str,
+        reason: str,
+        qualification_time: Optional[datetime] = None,
+    ) -> M5Confirmation:
+        return M5Confirmation(
+            setup_id=setup_id,
+            direction=direction,
+            state="REJECTED",
+            qualification_time=qualification_time,
+            confirmation_time=None,
+            confirmation_break_time=None,
+            confirmation_break_index=None,
+            confirmation_event=None,
+            candles_elapsed=0,
+            reason=reason,
+        )
+
+    def _evaluate_setup(
+        self,
+        setup,
+        candle_times: list[datetime],
+        bos_events,
+    ) -> M5Confirmation:
+        direction = str(setup.direction)
+
+        if direction not in {"BULLISH", "BEARISH"}:
+            raise ValueError(
+                f"Unsupported M15 setup direction: {direction}"
+            )
+
+        state = str(setup.state)
+
+        if state != "QUALIFIED":
+            setup_id = self._setup_identity(setup, None)
+
+            return self._rejected(
+                setup_id=setup_id,
+                direction=direction,
+                reason=(
+                    f"M15 setup state is {state}; "
+                    "only QUALIFIED setups can receive M5 confirmation."
+                ),
+            )
+
+        if setup.qualification_time is None:
+            raise ValueError(
+                "A QUALIFIED M15 setup must have qualification_time."
+            )
+
+        qualification_time = self._to_utc_datetime(
+            setup.qualification_time,
+            "M15 qualification_time",
+        )
+
+        setup_id = self._setup_identity(
+            setup,
+            qualification_time,
+        )
+
+        eligible_indices = [
+            index
+            for index, candle_time in enumerate(candle_times)
+            if candle_time >= qualification_time
+        ]
+
+        window_indices = eligible_indices[
+            :self.confirmation_window_candles
+        ]
+
+        matching_events = [
+            event
+            for event in bos_events
+            if (
+                event.direction == direction
+                and event.break_index in window_indices
+            )
+        ]
+
+        matching_events.sort(key=lambda event: event.break_index)
+
+        if matching_events:
+            event = matching_events[0]
+
+            return M5Confirmation(
+                setup_id=setup_id,
+                direction=direction,
+                state="CONFIRMED",
+                qualification_time=qualification_time,
+                confirmation_time=(
+                    candle_times[event.break_index]
+                    + self.TIMEFRAME_DURATION
+                ),
+                confirmation_break_time=self._to_utc_datetime(
+                    event.break_time,
+                    "BOS break_time",
+                ),
+                confirmation_break_index=event.break_index,
+                confirmation_event=event,
+                candles_elapsed=event.break_index - window_indices[0] + 1,
+                reason=(
+                    f"{direction} M5 BOS confirmed the qualified "
+                    "M15 setup within the confirmation window."
+                ),
+            )
+
+        candles_elapsed = len(window_indices)
+
+        if candles_elapsed >= self.confirmation_window_candles:
+            return M5Confirmation(
+                setup_id=setup_id,
+                direction=direction,
+                state="EXPIRED",
+                qualification_time=qualification_time,
+                confirmation_time=None,
+                confirmation_break_time=None,
+                confirmation_break_index=None,
+                confirmation_event=None,
+                candles_elapsed=candles_elapsed,
+                reason=(
+                    "No matching M5 BOS occurred within "
+                    f"{self.confirmation_window_candles} eligible candles."
+                ),
+            )
+
+        return M5Confirmation(
+            setup_id=setup_id,
+            direction=direction,
+            state="WAITING",
+            qualification_time=qualification_time,
+            confirmation_time=None,
+            confirmation_break_time=None,
+            confirmation_break_index=None,
+            confirmation_event=None,
+            candles_elapsed=candles_elapsed,
+            reason=(
+                "Waiting for a matching M5 BOS. "
+                f"{candles_elapsed}/{self.confirmation_window_candles} "
+                "eligible candles have been evaluated."
+            ),
+        )
+
+    def detect(
+        self,
+        m15_setups: M15SetupResult,
+        m5_candles: pd.DataFrame,
+        m5_market_structure: MarketStructureResult,
+    ) -> M5ConfirmationResult:
+        self._validate_inputs(
+            m15_setups,
+            m5_candles,
+            m5_market_structure,
+        )
+
+        candle_times = [
+            self._to_utc_datetime(
+                value,
+                f"M5 candle time at index {index}",
+            )
+            for index, value in enumerate(m5_candles["time"])
+        ]
+
+        bos_events = tuple(m5_market_structure.bos_events)
+
+        self._validate_bos_events(
+            bos_events,
+            candle_times,
+        )
+
+        confirmations = tuple(
+            self._evaluate_setup(
+                setup,
+                candle_times,
+                bos_events,
+            )
+            for setup in m15_setups.setups
+        )
+
+        return M5ConfirmationResult(
+            confirmations=confirmations,
+        )
+
+
+
+==========================================================================================
+FILE: strategy\m15_setup_detector.py
+==========================================================================================
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import math
+from typing import Literal, Optional
+
+import pandas as pd
+
+from research.swing_detection.atr_calculator import WilderATR
+from research.swing_detection.alignment_engine import AlignmentEngine
+from research.swing_detection.market_structure_engine import (
+    MarketStructureResult,
+)
+
+
+SetupState = Literal[
+    "REJECTED",
+    "WAITING_FOR_RETEST",
+    "RETEST_DETECTED",
+    "QUALIFIED",
+    "INVALIDATED",
+    "EXPIRED",
+]
+
+
+@dataclass(frozen=True)
+class M15Setup:
+    """Auditable lifecycle record for one M15 BOS setup."""
+
+    direction: str
+    state: SetupState
+
+    break_time: datetime
+    decision_time: datetime
+    break_index: int
+
+    broken_level: float
+    atr_value: Optional[float]
+    retest_tolerance: Optional[float]
+
+    retest_time: Optional[datetime]
+    qualification_time: Optional[datetime]
+    expiry_time: Optional[datetime]
+
+    candles_elapsed: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class M15SetupResult:
+    """Collection of M15 setup lifecycle records."""
+
+    setups: tuple[M15Setup, ...]
+
+    @property
+    def qualified_setups(self) -> tuple[M15Setup, ...]:
+        return tuple(
+            setup
+            for setup in self.setups
+            if setup.state == "QUALIFIED"
+        )
+
+
+class M15SetupDetector:
+    """
+    Detect M15 retest and rejection setups from confirmed BOS events.
+
+    Consumes MarketStructureResult produced by MarketStructureEngine.
+    Does not independently detect swings or BOS events.
+
+    This component does not place, modify, or manage trading orders.
+    """
+
+    TIMEFRAME_DURATION = timedelta(minutes=15)
+
+    def __init__(
+        self,
+        atr_period: int = 14,
+        retest_tolerance_atr: float = 0.10,
+        expiry_candles: int = 20,
+        alignment_engine: Optional[AlignmentEngine] = None,
+    ) -> None:
+
+        if isinstance(atr_period, bool) or not isinstance(
+            atr_period, int
+        ):
+            raise TypeError("atr_period must be an integer.")
+
+        if atr_period < 1:
+            raise ValueError("atr_period must be at least 1.")
+
+        if (
+            isinstance(retest_tolerance_atr, bool)
+            or not isinstance(retest_tolerance_atr, (int, float))
+        ):
+            raise TypeError(
+                "retest_tolerance_atr must be numeric."
+            )
+
+        if (
+            not math.isfinite(float(retest_tolerance_atr))
+            or retest_tolerance_atr <= 0
+        ):
+            raise ValueError(
+                "retest_tolerance_atr must be positive and finite."
+            )
+
+        if isinstance(expiry_candles, bool) or not isinstance(
+            expiry_candles, int
+        ):
+            raise TypeError("expiry_candles must be an integer.")
+
+        if expiry_candles < 1:
+            raise ValueError(
+                "expiry_candles must be at least 1."
+            )
+
+        self.atr_period = atr_period
+        self.retest_tolerance_atr = float(
+            retest_tolerance_atr
+        )
+        self.expiry_candles = expiry_candles
+
+        self.atr_calculator = WilderATR(period=atr_period)
+        self.alignment_engine = (
+            alignment_engine or AlignmentEngine()
+        )
+
+    @staticmethod
+    def _to_utc_datetime(value, field_name: str) -> datetime:
+        """Convert an aware timestamp to a UTC Python datetime."""
+
+        try:
+            timestamp = pd.Timestamp(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"{field_name} must be a valid timezone-aware timestamp."
+            ) from exc
+
+        if pd.isna(timestamp) or timestamp.tzinfo is None:
+            raise ValueError(
+                f"{field_name} must be timezone-aware."
+            )
+
+        return timestamp.tz_convert("UTC").to_pydatetime()
+
+    @staticmethod
+    def _validate_inputs(
+        candles: pd.DataFrame,
+        market_structure: MarketStructureResult,
+    ) -> None:
+
+        if not isinstance(candles, pd.DataFrame):
+            raise TypeError(
+                "candles must be a pandas DataFrame."
+            )
+
+        if not isinstance(
+            market_structure,
+            MarketStructureResult,
+        ):
+            raise TypeError(
+                "market_structure must be a MarketStructureResult."
+            )
+
+        if market_structure.timeframe != "M15":
+            raise ValueError(
+                "market_structure must contain M15 analysis."
+            )
+
+        if market_structure.candle_count != len(candles):
+            raise ValueError(
+                "Candle count does not match market-structure analysis."
+            )
+
+        if "time" not in candles.columns:
+            raise ValueError(
+                "candles must contain a time column."
+            )
+
+    @classmethod
+    def _validate_event(
+        cls,
+        event,
+        candles: pd.DataFrame,
+    ) -> datetime:
+        """Validate one BOS event and return its normalized break time."""
+
+        if event.event_type != "BOS":
+            raise ValueError(
+                "Only BOS events can create M15 retest setups."
+            )
+
+        if event.direction not in ("BULLISH", "BEARISH"):
+            raise ValueError(
+                "Unsupported BOS direction."
+            )
+
+        if (
+            isinstance(event.break_index, bool)
+            or not isinstance(event.break_index, int)
+        ):
+            raise TypeError(
+                "BOS break_index must be an integer."
+            )
+
+        if not 0 <= event.break_index < len(candles):
+            raise ValueError(
+                "BOS break_index is outside candle data."
+            )
+
+        if (
+            isinstance(event.level_price, bool)
+            or not isinstance(event.level_price, (int, float))
+            or not math.isfinite(float(event.level_price))
+            or event.level_price <= 0
+        ):
+            raise ValueError(
+                "BOS level_price must be positive and finite."
+            )
+
+        break_time = cls._to_utc_datetime(
+            event.break_time,
+            "BOS break_time",
+        )
+
+        candle_time = cls._to_utc_datetime(
+            candles.iloc[event.break_index]["time"],
+            "BOS candle time",
+        )
+
+        if break_time != candle_time:
+            raise ValueError(
+                "BOS break_time does not match its candle index."
+            )
+
+        return break_time
+
+    def _alignment_permitted(
+        self,
+        h4_snapshots: tuple,
+        h1_snapshots: tuple,
+        assessment_time: datetime,
+        direction: str,
+    ) -> tuple[bool, str]:
+
+        alignment = self.alignment_engine.evaluate(
+            h4_snapshots=h4_snapshots,
+            h1_snapshots=h1_snapshots,
+            assessment_time=assessment_time,
+        )
+
+        if (
+            alignment.h4_known_at_time is not None
+            and alignment.h4_known_at_time > assessment_time
+        ):
+            raise RuntimeError(
+                "H4 alignment lookahead detected."
+            )
+
+        if (
+            alignment.h1_known_at_time is not None
+            and alignment.h1_known_at_time > assessment_time
+        ):
+            raise RuntimeError(
+                "H1 alignment lookahead detected."
+            )
+
+        permitted = (
+            alignment.directional_permission
+            and alignment.permitted_direction == direction
+        )
+
+        return permitted, alignment.reason
+
+    @staticmethod
+    def _build_setup(
+        *,
+        event,
+        break_time: datetime,
+        decision_time: datetime,
+        state: SetupState,
+        reason: str,
+        atr_value: Optional[float] = None,
+        tolerance: Optional[float] = None,
+        retest_time: Optional[datetime] = None,
+        qualification_time: Optional[datetime] = None,
+        expiry_time: Optional[datetime] = None,
+        candles_elapsed: int = 0,
+    ) -> M15Setup:
+
+        return M15Setup(
+            direction=event.direction,
+            state=state,
+            break_time=break_time,
+            decision_time=decision_time,
+            break_index=event.break_index,
+            broken_level=float(event.level_price),
+            atr_value=atr_value,
+            retest_tolerance=tolerance,
+            retest_time=retest_time,
+            qualification_time=qualification_time,
+            expiry_time=expiry_time,
+            candles_elapsed=candles_elapsed,
+            reason=reason,
+        )
+
+    def _process_event(
+        self,
+        event,
+        candles: pd.DataFrame,
+        atr_values: pd.Series,
+        h4_snapshots: tuple,
+        h1_snapshots: tuple,
+    ) -> M15Setup:
+
+        break_time = self._validate_event(event, candles)
+
+        decision_time = (
+            break_time + self.TIMEFRAME_DURATION
+        )
+
+        permitted, alignment_reason = (
+            self._alignment_permitted(
+                h4_snapshots,
+                h1_snapshots,
+                decision_time,
+                event.direction,
+            )
+        )
+
+        if not permitted:
+            return self._build_setup(
+                event=event,
+                break_time=break_time,
+                decision_time=decision_time,
+                state="REJECTED",
+                reason=(
+                    "BOS rejected by H4/H1 alignment: "
+                    f"{alignment_reason}"
+                ),
+            )
+
+        atr_value = atr_values.iloc[event.break_index]
+
+        if (
+            pd.isna(atr_value)
+            or not math.isfinite(float(atr_value))
+            or float(atr_value) <= 0
+        ):
+            return self._build_setup(
+                event=event,
+                break_time=break_time,
+                decision_time=decision_time,
+                state="REJECTED",
+                reason=(
+                    "ATR was unavailable or invalid at BOS confirmation."
+                ),
+            )
+
+        atr_value = float(atr_value)
+
+        # Tolerance is frozen using ATR at BOS confirmation.
+        tolerance = (
+            atr_value * self.retest_tolerance_atr
+        )
+
+        level = float(event.level_price)
+
+        lower_boundary = level - tolerance
+        upper_boundary = level + tolerance
+
+        retest_time = None
+
+        for index in range(
+            event.break_index + 1,
+            len(candles),
+        ):
+
+            elapsed = index - event.break_index
+            candle = candles.iloc[index]
+
+            candle_time = candle["time"].to_pydatetime()
+
+            candle_close_time = (
+                candle_time + self.TIMEFRAME_DURATION
+            )
+
+            # Reassess directional permission at every completed
+            # M15 candle close. The alignment engine filters out
+            # snapshots that were not yet knowable at that time.
+            still_permitted, current_reason = (
+                self._alignment_permitted(
+                    h4_snapshots,
+                    h1_snapshots,
+                    candle_close_time,
+                    event.direction,
+                )
+            )
+
+            if not still_permitted:
+                return self._build_setup(
+                    event=event,
+                    break_time=break_time,
+                    decision_time=decision_time,
+                    state="INVALIDATED",
+                    reason=(
+                        "H4/H1 directional permission was lost or "
+                        f"reversed: {current_reason}"
+                    ),
+                    atr_value=atr_value,
+                    tolerance=tolerance,
+                    retest_time=retest_time,
+                    candles_elapsed=elapsed,
+                )
+
+            close = float(candle["close"])
+            high = float(candle["high"])
+            low = float(candle["low"])
+
+            # Invalidation takes priority over retest/rejection.
+            if event.direction == "BULLISH":
+                invalidated = close < lower_boundary
+            else:
+                invalidated = close > upper_boundary
+
+            if invalidated:
+                return self._build_setup(
+                    event=event,
+                    break_time=break_time,
+                    decision_time=decision_time,
+                    state="INVALIDATED",
+                    reason=(
+                        "Completed M15 candle closed beyond the "
+                        "invalidation boundary."
+                    ),
+                    atr_value=atr_value,
+                    tolerance=tolerance,
+                    retest_time=retest_time,
+                    candles_elapsed=elapsed,
+                )
+
+            if retest_time is None:
+
+                previous_close = float(
+                    candles.iloc[index - 1]["close"]
+                )
+
+                intersects_zone = (
+                    low <= upper_boundary
+                    and high >= lower_boundary
+                )
+
+                approached_from_correct_side = (
+                    previous_close > level
+                    if event.direction == "BULLISH"
+                    else previous_close < level
+                )
+
+                if (
+                    intersects_zone
+                    and approached_from_correct_side
+                ):
+                    # Record the completed retest candle.
+                    # It cannot also confirm rejection.
+                    retest_time = candle_close_time
+
+            else:
+
+                rejection_confirmed = (
+                    close > level
+                    if event.direction == "BULLISH"
+                    else close < level
+                )
+
+                if rejection_confirmed:
+                    return self._build_setup(
+                        event=event,
+                        break_time=break_time,
+                        decision_time=decision_time,
+                        state="QUALIFIED",
+                        reason=(
+                            "Retest detected and a subsequent completed "
+                            "M15 candle confirmed rejection."
+                        ),
+                        atr_value=atr_value,
+                        tolerance=tolerance,
+                        retest_time=retest_time,
+                        qualification_time=candle_close_time,
+                        candles_elapsed=elapsed,
+                    )
+
+            # Expiry is checked AFTER processing the candle.
+            # This allows the 20th candle to qualify, but prevents
+            # a retest first detected on candle 20 from remaining active.
+            if elapsed == self.expiry_candles:
+                return self._build_setup(
+                    event=event,
+                    break_time=break_time,
+                    decision_time=decision_time,
+                    state="EXPIRED",
+                    reason=(
+                        "Setup reached its configured expiry without "
+                        "confirmed rejection."
+                    ),
+                    atr_value=atr_value,
+                    tolerance=tolerance,
+                    retest_time=retest_time,
+                    expiry_time=candle_close_time,
+                    candles_elapsed=elapsed,
+                )
+
+        if retest_time is not None:
+            state: SetupState = "RETEST_DETECTED"
+            reason = (
+                "Retest detected. A subsequent rejection candle "
+                "has not yet been confirmed."
+            )
+        else:
+            state = "WAITING_FOR_RETEST"
+            reason = (
+                "Waiting for price to return to the retest zone."
+            )
+
+        candles_elapsed = min(
+            len(candles) - 1 - event.break_index,
+            self.expiry_candles,
+        )
+
+        return self._build_setup(
+            event=event,
+            break_time=break_time,
+            decision_time=decision_time,
+            state=state,
+            reason=reason,
+            atr_value=atr_value,
+            tolerance=tolerance,
+            retest_time=retest_time,
+            candles_elapsed=candles_elapsed,
+        )
+
+    def detect(
+        self,
+        candles: pd.DataFrame,
+        market_structure: MarketStructureResult,
+        h4_snapshots,
+        h1_snapshots,
+    ) -> M15SetupResult:
+        """
+        Evaluate all confirmed M15 BOS events.
+
+        Candles must be completed M15 candles.
+        H4/H1 snapshots are evaluated using their known-at timestamps.
+
+        No trading orders are placed or managed.
+        """
+
+        self._validate_inputs(
+            candles,
+            market_structure,
+        )
+
+        # Public calculation performs the ATR calculator's full
+        # candle validation. Do not call its private validator.
+        atr_values = self.atr_calculator.calculate(candles)
+
+        # Normalize a separate working copy for detector operations.
+        working_candles = candles.copy(deep=True)
+
+        working_candles["time"] = pd.to_datetime(
+            working_candles["time"],
+            utc=True,
+            errors="coerce",
+        )
+
+        for column in ("high", "low", "close"):
+            working_candles[column] = pd.to_numeric(
+                working_candles[column],
+                errors="coerce",
+            )
+
+        # Materialize iterables once. This prevents generators from
+        # being exhausted when multiple BOS events are evaluated.
+        try:
+            h4_snapshot_list = tuple(h4_snapshots)
+            h1_snapshot_list = tuple(h1_snapshots)
+        except TypeError as exc:
+            raise TypeError(
+                "H4 and H1 snapshots must be iterable."
+            ) from exc
+
+        ordered_events = sorted(
+            market_structure.bos_events,
+            key=lambda event: (
+                event.break_index,
+                event.direction,
+            ),
+        )
+
+        setups = []
+
+        for event in ordered_events:
+            setups.append(
+                self._process_event(
+                    event=event,
+                    candles=working_candles,
+                    atr_values=atr_values,
+                    h4_snapshots=h4_snapshot_list,
+                    h1_snapshots=h1_snapshot_list,
+                )
+            )
+
+        return M15SetupResult(
+            setups=tuple(setups)
+        )
+
+==========================================================================================
+FILE: research\swing_detection\market_structure_engine.py
+==========================================================================================
+
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Optional
+
+import pandas as pd
+
+from research.swing_detection.alignment_engine import AlignmentEngine
+from research.swing_detection.alignment_models import AlignmentResult
+from research.swing_detection.bos_detector import BOSDetector
+from research.swing_detection.choch_detector import CHoCHDetector
+from research.swing_detection.fractal_detector import FractalSwingDetector
+from research.swing_detection.protected_level_registry import (
+    ProtectedLevelRegistry,
+)
+from research.swing_detection.protected_models import ProtectedSwing
+from research.swing_detection.registry_models import ProtectedLevel
+from research.swing_detection.protected_swing_tracker import (
+    ProtectedSwingTracker,
+)
+from research.swing_detection.structure_classifier import (
+    StructureClassifier,
+)
+from research.swing_detection.structure_models import ClassifiedSwing
+from research.swing_detection.swing_models import SwingPoint
+from research.swing_detection.trend_classifier import TrendClassifier
+from research.swing_detection.trend_models import TrendSnapshot
+from research.swing_detection.break_models import StructureBreak
+
+
+@dataclass(frozen=True)
+class MarketStructureResult:
+    """Complete market-structure analysis for one timeframe."""
+
+    timeframe: str
+    candle_count: int
+
+    swings: tuple[SwingPoint, ...]
+    classified_swings: tuple[ClassifiedSwing, ...]
+    trend_snapshots: tuple[TrendSnapshot, ...]
+
+    bos_events: tuple[StructureBreak, ...]
+    protected_swings: tuple[ProtectedSwing, ...]
+    choch_events: tuple[StructureBreak, ...]
+
+    protected_levels: tuple[ProtectedLevel, ...]
+    active_protected_levels: tuple[ProtectedLevel, ...]
+    retired_protected_levels: tuple[ProtectedLevel, ...]
+
+
+@dataclass(frozen=True)
+class MultiTimeframeMarketStructureResult:
+    """Combined H4/H1 structural analysis and directional alignment."""
+
+    h4_analysis: MarketStructureResult
+    h1_analysis: MarketStructureResult
+    alignment: AlignmentResult
+
+
+class MarketStructureEngine:
+    """
+    Coordinates the existing market-structure components.
+
+    Processing stages:
+
+    1. Fractal swing detection.
+    2. Swing classification.
+    3. Trend classification.
+    4. BOS detection.
+    5. Protected swing tracking.
+    6. Protected level registration.
+    7. CHoCH detection.
+    8. Chronological protected-level retirement.
+
+    Detection remains separate from registry management.
+
+    No trading orders are created or executed.
+    """
+
+    def __init__(
+        self,
+        left_bars: int = 2,
+        right_bars: int = 2,
+        price_tolerance: float = 0.0,
+    ) -> None:
+
+        self.fractal_detector = FractalSwingDetector(
+            left_bars=left_bars,
+            right_bars=right_bars,
+        )
+
+        self.structure_classifier = StructureClassifier(
+            price_tolerance=price_tolerance,
+        )
+
+        self.trend_classifier = TrendClassifier()
+        self.bos_detector = BOSDetector()
+        self.protected_swing_tracker = ProtectedSwingTracker()
+        self.choch_detector = CHoCHDetector()
+        self.alignment_engine = AlignmentEngine()
+
+    @staticmethod
+    def _protected_identity(protected: ProtectedSwing) -> tuple:
+        swing = protected.swing.swing
+
+        return (
+            protected.trend,
+            swing.swing_type,
+            swing.swing_index,
+            swing.confirmation_index,
+        )
+
+    @staticmethod
+    def _level_identity(level: ProtectedLevel) -> tuple:
+        swing = level.swing.swing
+
+        return (
+            level.trend,
+            swing.swing_type,
+            swing.swing_index,
+            swing.confirmation_index,
+        )
+
+    @staticmethod
+    def _event_identity(event: StructureBreak) -> tuple:
+        swing = event.level_swing.swing
+
+        return (
+            event.prior_trend,
+            swing.swing_type,
+            swing.swing_index,
+            swing.confirmation_index,
+        )
+
+    @staticmethod
+    def _protected_sort_key(protected: ProtectedSwing) -> tuple:
+        return (
+            protected.established_by.break_index,
+            protected.swing.swing.confirmation_index,
+            protected.swing.swing.swing_index,
+            protected.trend,
+        )
+
+    @staticmethod
+    def _event_sort_key(event: StructureBreak) -> tuple:
+        return (
+            event.break_index,
+            event.break_time,
+            event.direction,
+        )
+
+    def _detect_choch_events(
+        self,
+        candles: pd.DataFrame,
+        protected_swings: tuple[ProtectedSwing, ...],
+    ) -> tuple[StructureBreak, ...]:
+        """
+        Detect CHoCH events against all structurally established levels.
+
+        This is a detection pass only. It does not mutate the final
+        chronological registry.
+
+        CHoCHDetector checks each level's activation_index, so a
+        protected level cannot trigger before its BOS activation.
+        """
+
+        detection_registry = ProtectedLevelRegistry()
+
+        ordered_protected = sorted(
+            protected_swings,
+            key=self._protected_sort_key,
+        )
+
+        for protected in ordered_protected:
+            detection_registry.register([protected])
+
+        events = self.choch_detector.detect(
+            candles=candles,
+            registry=detection_registry,
+        )
+
+        return tuple(
+            sorted(events, key=self._event_sort_key)
+        )
+
+    def _replay_registry(
+        self,
+        protected_swings: tuple[ProtectedSwing, ...],
+        choch_events: tuple[StructureBreak, ...],
+    ) -> ProtectedLevelRegistry:
+        """
+        Reconstruct registry state in chronological candle order.
+
+        BOS events register protected levels on their break candles.
+        Their activation_index determines when they become usable.
+
+        CHoCH events retire matching active levels on their own
+        confirmation candles.
+
+        BOS registration is processed before CHoCH retirement when
+        both events occur on the same candle. A newly registered
+        level cannot trigger on that candle because activation occurs
+        on the following candle.
+        """
+
+        registry = ProtectedLevelRegistry()
+
+        protected_by_index = defaultdict(list)
+        choch_by_index = defaultdict(list)
+
+        for protected in protected_swings:
+            break_index = protected.established_by.break_index
+
+            protected_by_index[break_index].append(protected)
+
+        for event in choch_events:
+            choch_by_index[event.break_index].append(event)
+
+        timeline = sorted(
+            set(protected_by_index) | set(choch_by_index)
+        )
+
+        for candle_index in timeline:
+
+            current_protected = sorted(
+                protected_by_index.get(candle_index, []),
+                key=self._protected_sort_key,
+            )
+
+            # Register BOS-established protected levels first.
+            for protected in current_protected:
+                registry.register([protected])
+
+            current_choch_events = sorted(
+                choch_by_index.get(candle_index, []),
+                key=self._event_sort_key,
+            )
+
+            # Retire the exact level broken by each CHoCH event.
+            for event in current_choch_events:
+
+                identity = self._event_identity(event)
+
+                matching_levels = [
+                    level
+                    for level in registry.get_active_levels(
+                        as_of_index=candle_index
+                    )
+                    if self._level_identity(level) == identity
+                ]
+
+                if len(matching_levels) != 1:
+                    raise RuntimeError(
+                        "CHoCH event could not be matched to exactly "
+                        "one active protected level. "
+                        f"Identity: {identity}; "
+                        f"candle index: {candle_index}."
+                    )
+
+                registry.retire(
+                    matching_levels[0],
+                    event,
+                )
+
+        return registry
+
+    def analyze(
+        self,
+        candles: pd.DataFrame,
+        timeframe: str = "H1",
+    ) -> MarketStructureResult:
+        """
+        Perform complete market-structure analysis for one timeframe.
+
+        Supported timeframes are defined by BOSDetector.
+        Candles must contain completed historical OHLC data.
+        """
+
+        if not isinstance(candles, pd.DataFrame):
+            raise TypeError(
+                "candles must be a pandas DataFrame."
+            )
+
+        if candles.empty:
+            raise ValueError(
+                "Candle dataframe cannot be empty."
+            )
+
+        if len(candles) < 2:
+            raise ValueError(
+                "At least two candles are required for "
+                "market-structure analysis."
+            )
+
+        if not isinstance(timeframe, str):
+            raise TypeError(
+                "timeframe must be a string."
+            )
+
+        if timeframe not in BOSDetector.TIMEFRAME_DURATIONS:
+            raise ValueError(
+                f"Unsupported timeframe: {timeframe}."
+            )
+
+        # Stage 1: Detect confirmed fractal swings.
+        swings = tuple(
+            self.fractal_detector.detect(candles)
+        )
+
+        # Stage 2: Classify confirmed swings.
+        classified_swings = tuple(
+            self.structure_classifier.classify(swings)
+        )
+
+        # Stage 3: Generate chronological trend snapshots.
+        trend_snapshots = tuple(
+            self.trend_classifier.classify(classified_swings)
+        )
+
+        # Stage 4: Detect confirmed structural breaks.
+        bos_events = tuple(
+            sorted(
+                self.bos_detector.detect(
+                    candles=candles,
+                    swings=classified_swings,
+                    trend_snapshots=trend_snapshots,
+                    timeframe=timeframe,
+                ),
+                key=self._event_sort_key,
+            )
+        )
+
+        # Stage 5: Identify protected swings established by BOS.
+        protected_swings = tuple(
+            sorted(
+                self.protected_swing_tracker.track(
+                    swings=classified_swings,
+                    bos_events=bos_events,
+                ),
+                key=self._protected_sort_key,
+            )
+        )
+
+        # Stage 6 and 7: Detect CHoCH against established levels.
+        choch_events = self._detect_choch_events(
+            candles=candles,
+            protected_swings=protected_swings,
+        )
+
+        # Stage 8: Reconstruct the final registry chronologically.
+        registry = self._replay_registry(
+            protected_swings=protected_swings,
+            choch_events=choch_events,
+        )
+
+        return MarketStructureResult(
+            timeframe=timeframe,
+            candle_count=len(candles),
+
+            swings=swings,
+            classified_swings=classified_swings,
+            trend_snapshots=trend_snapshots,
+
+            bos_events=bos_events,
+            protected_swings=protected_swings,
+            choch_events=choch_events,
+
+            protected_levels=registry.levels,
+            active_protected_levels=tuple(
+                registry.get_active_levels()
+            ),
+            retired_protected_levels=tuple(
+                registry.get_retired_levels()
+            ),
+        )
+
+    def analyze_multi_timeframe(
+        self,
+        h4_candles: pd.DataFrame,
+        h1_candles: pd.DataFrame,
+        assessment_time,
+    ) -> MultiTimeframeMarketStructureResult:
+        """
+        Analyze H4 and H1 independently, then evaluate alignment.
+
+        Directional permission is granted only when both timeframes
+        have eligible, confirmed and matching directional trends.
+        """
+
+        h4_analysis = self.analyze(
+            candles=h4_candles,
+            timeframe="H4",
+        )
+
+        h1_analysis = self.analyze(
+            candles=h1_candles,
+            timeframe="H1",
+        )
+
+        alignment = self.alignment_engine.evaluate(
+            h4_snapshots=h4_analysis.trend_snapshots,
+            h1_snapshots=h1_analysis.trend_snapshots,
+            assessment_time=assessment_time,
+        )
+
+        return MultiTimeframeMarketStructureResult(
+            h4_analysis=h4_analysis,
+            h1_analysis=h1_analysis,
+            alignment=alignment,
+        )
+
+
+==========================================================================================
+FILE: tests\test_historical_strategy_replay.py
+==========================================================================================
+
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+
+from research.historical_strategy_replay import (
+    HistoricalStrategyReplay,
+    ReplayAssessment,
+)
+
+
+class FakeStorage:
+    def __init__(self, datasets):
+        self.datasets = datasets
+        self.loaded = []
+
+    def load_dataset(self, symbol, timeframe):
+        self.loaded.append((symbol, timeframe))
+        return self.datasets[timeframe].copy()
+
+
+class FakeOrchestrator:
+    def __init__(self):
+        self.calls = []
+
+    def analyze(
+        self,
+        h4_candles,
+        h1_candles,
+        m15_candles,
+        m5_candles,
+        assessment_time,
+    ):
+        self.calls.append({
+            "h4": h4_candles.copy(),
+            "h1": h1_candles.copy(),
+            "m15": m15_candles.copy(),
+            "m5": m5_candles.copy(),
+            "assessment_time": assessment_time,
+        })
+
+        return SimpleNamespace(
+            alignment="BULLISH",
+            qualified_setups=[object()],
+            confirmed_setups=[object()],
+            waiting_setups=[],
+            expired_setups=[],
+            rejected_setups=[],
+        )
+
+
+def make_dataset(timeframe, latest_close, count=30):
+    durations = {
+        "H4": pd.Timedelta(hours=4),
+        "H1": pd.Timedelta(hours=1),
+        "M15": pd.Timedelta(minutes=15),
+        "M5": pd.Timedelta(minutes=5),
+    }
+
+    duration = durations[timeframe]
+
+    opening_times = [
+        latest_close - duration * (count - index)
+        for index in range(count)
+    ]
+
+    return pd.DataFrame({
+        "time": opening_times,
+        "open": [1.1000] * count,
+        "high": [1.1010] * count,
+        "low": [1.0990] * count,
+        "close": [1.1005] * count,
+        "tick_volume": [100] * count,
+        "spread": [10] * count,
+        "real_volume": [0] * count,
+        "is_forming_candle": [False] * count,
+    })
+
+
+def make_datasets(latest_close, count=30):
+    return {
+        timeframe: make_dataset(
+            timeframe,
+            latest_close,
+            count,
+        )
+        for timeframe in ("H4", "H1", "M15", "M5")
+    }
+
+
+def make_replay(datasets, orchestrator=None):
+    storage = FakeStorage(datasets)
+    strategy = (
+        orchestrator
+        if orchestrator is not None
+        else FakeOrchestrator()
+    )
+
+    replay = HistoricalStrategyReplay(
+        storage=storage,
+        strategy_orchestrator=strategy,
+    )
+
+    return replay, storage, strategy
+
+
+def test_loads_all_four_timeframe_datasets():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+
+    replay, storage, _ = make_replay(datasets)
+
+    loaded = replay.load_datasets("EURUSD")
+
+    assert set(loaded) == {"H4", "H1", "M15", "M5"}
+    assert len(storage.loaded) == 4
+    assert all(symbol == "EURUSD" for symbol, _ in storage.loaded)
+
+
+def test_dataset_timestamps_are_normalized_to_utc():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+
+    replay, _, _ = make_replay(datasets)
+
+    loaded = replay.load_datasets("EURUSD")
+
+    for data in loaded.values():
+        assert str(data["time"].dt.tz) == "UTC"
+
+
+def test_rejects_empty_dataset():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+    datasets["H1"] = pd.DataFrame()
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="empty"):
+        replay.load_datasets("EURUSD")
+
+
+def test_rejects_dataset_with_missing_required_columns():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+    datasets["M15"] = datasets["M15"].drop(columns=["close"])
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="missing columns"):
+        replay.load_datasets("EURUSD")
+
+
+def test_rejects_duplicate_timestamps():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+    datasets["M5"].loc[1, "time"] = datasets["M5"].loc[0, "time"]
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        replay.load_datasets("EURUSD")
+
+
+def test_rejects_non_chronological_dataset():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+    datasets["H4"] = datasets["H4"].iloc[::-1].reset_index(drop=True)
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="chronologically"):
+        replay.load_datasets("EURUSD")
+
+
+def test_rejects_timezone_naive_assessment_time():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        replay.run(
+            start_time=pd.Timestamp("2026-06-01 12:00:00"),
+        )
+
+
+def test_rejects_invalid_assessment_interval():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="assessment_interval"):
+        replay.run(assessment_interval=0)
+
+
+def test_rejects_invalid_symbol():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="Symbol"):
+        replay.load_datasets("")
+
+
+def test_completed_candle_filter_excludes_forming_candles():
+    assessment_time = pd.Timestamp("2026-06-01T12:00:00Z")
+    data = make_dataset("M5", assessment_time, count=3)
+
+    data.loc[data.index[-1], "is_forming_candle"] = True
+
+    completed = HistoricalStrategyReplay._completed_candles(
+        data,
+        "M5",
+        assessment_time,
+    )
+
+    assert len(completed) == 2
+    assert not completed["is_forming_candle"].any()
+
+
+def test_completed_candle_filter_excludes_future_closes():
+    assessment_time = pd.Timestamp("2026-06-01T12:00:00Z")
+    data = make_dataset("M5", assessment_time, count=3)
+
+    future = pd.DataFrame([{
+        "time": assessment_time,
+        "open": 1.1000,
+        "high": 1.1010,
+        "low": 1.0990,
+        "close": 1.1005,
+        "tick_volume": 100,
+        "spread": 10,
+        "real_volume": 0,
+        "is_forming_candle": False,
+    }])
+
+    data = pd.concat([data, future], ignore_index=True)
+
+    completed = HistoricalStrategyReplay._completed_candles(
+        data,
+        "M5",
+        assessment_time,
+    )
+
+    assert (completed["time"] + pd.Timedelta(minutes=5) <= assessment_time).all()
+
+
+def test_replay_records_strategy_pipeline_results():
+    assessment_time = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(assessment_time)
+
+    replay, _, orchestrator = make_replay(datasets)
+
+    result = replay.run(
+        symbol="EURUSD",
+        start_time=assessment_time,
+        end_time=assessment_time,
+    )
+
+    assert result.assessment_count == 1
+    assert len(orchestrator.calls) == 1
+    assert result.total_qualified_setups == 1
+    assert result.total_confirmed_setups == 1
+    assert result.total_waiting_setups == 0
+    assert result.total_expired_setups == 0
+    assert result.total_rejected_setups == 0
+
+    assessment = result.assessments[0]
+
+    assert isinstance(assessment, ReplayAssessment)
+    assert assessment.alignment == "BULLISH"
+    assert assessment.assessment_time == assessment_time
+
+
+def test_replay_does_not_pass_future_candles_to_orchestrator():
+    assessment_time = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(assessment_time)
+
+    for timeframe, minutes in {
+        "H4": 240,
+        "H1": 60,
+        "M15": 15,
+        "M5": 5,
+    }.items():
+        future_row = datasets[timeframe].iloc[[-1]].copy()
+        future_row["time"] = assessment_time
+        future_row["is_forming_candle"] = False
+
+        datasets[timeframe] = pd.concat(
+            [datasets[timeframe], future_row],
+            ignore_index=True,
+        )
+
+    replay, _, orchestrator = make_replay(datasets)
+
+    replay.run(
+        start_time=assessment_time,
+        end_time=assessment_time,
+    )
+
+    assert len(orchestrator.calls) == 1
+
+    call = orchestrator.calls[0]
+
+    for timeframe in ("h4", "h1", "m15", "m5"):
+        duration = {
+            "h4": pd.Timedelta(hours=4),
+            "h1": pd.Timedelta(hours=1),
+            "m15": pd.Timedelta(minutes=15),
+            "m5": pd.Timedelta(minutes=5),
+        }[timeframe]
+
+        close_times = call[timeframe]["time"] + duration
+
+        assert (close_times <= assessment_time).all()
+
+
+def test_replay_skips_insufficient_history():
+    assessment_time = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(assessment_time, count=5)
+
+    replay, _, orchestrator = make_replay(datasets)
+
+    result = replay.run(
+        start_time=assessment_time,
+        end_time=assessment_time,
+    )
+
+    assert result.assessment_count == 0
+    assert result.skipped_insufficient_history == 1
+    assert len(orchestrator.calls) == 0
+
+
+def test_replay_skips_stale_timeframe_data():
+    assessment_time = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(assessment_time)
+
+    datasets["H4"] = make_dataset(
+        "H4",
+        assessment_time - pd.Timedelta(hours=8),
+    )
+
+    replay, _, orchestrator = make_replay(datasets)
+
+    result = replay.run(
+        start_time=assessment_time,
+        end_time=assessment_time,
+    )
+
+    assert result.assessment_count == 0
+    assert result.skipped_stale_data == 1
+    assert len(orchestrator.calls) == 0
+
+
+def test_replay_rejects_end_time_before_start_time():
+    latest_close = pd.Timestamp("2026-06-01T12:00:00Z")
+    datasets = make_datasets(latest_close)
+
+    replay, _, _ = make_replay(datasets)
+
+    with pytest.raises(ValueError, match="later than"):
+        replay.run(
+            start_time="2026-06-02T12:00:00Z",
+            end_time="2026-06-01T12:00:00Z",
+        )
+
+
+def test_replay_result_totals_are_zero_when_no_assessments():
+    result = HistoricalStrategyReplay.__new__(
+        HistoricalStrategyReplay
+    )
+
+    from research.historical_strategy_replay import HistoricalReplayResult
+
+    empty = HistoricalReplayResult(
+        symbol="EURUSD",
+        start_time=None,
+        end_time=None,
+        assessment_count=0,
+        skipped_insufficient_history=0,
+        skipped_stale_data=0,
+        assessments=(),
+    )
+
+    assert empty.total_qualified_setups == 0
+    assert empty.total_confirmed_setups == 0
+    assert empty.total_waiting_setups == 0
+    assert empty.total_expired_setups == 0
+    assert empty.total_rejected_setups == 0
+
+
+==========================================================================================
+FILE: tests\test_strategy_orchestrator.py
+==========================================================================================
+
+"""Tests for the strategy orchestrator and synchronizer integration."""
+
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+
+from strategy.strategy_orchestrator import (
+    StrategyOrchestrator,
+    StrategyPipelineResult,
+)
+
+
+class FakeTimeframeDataSynchronizer:
+    def __init__(self, synchronized_data=None):
+        self.calls = []
+        self.synchronized_data = synchronized_data
+
+    def synchronize(
+        self,
+        h4_candles,
+        h1_candles,
+        m15_candles,
+        m5_candles,
+        assessment_time,
+    ):
+        self.calls.append(
+            {
+                "h4_candles": h4_candles,
+                "h1_candles": h1_candles,
+                "m15_candles": m15_candles,
+                "m5_candles": m5_candles,
+                "assessment_time": assessment_time,
+            }
+        )
+
+        datasets = {
+            "H4": h4_candles,
+            "H1": h1_candles,
+            "M15": m15_candles,
+            "M5": m5_candles,
+        }
+
+        for timeframe, candles in datasets.items():
+            if not isinstance(candles, pd.DataFrame):
+                raise TypeError(
+                    f"{timeframe} candles must be a pandas DataFrame."
+                )
+
+            if candles.empty:
+                raise ValueError(
+                    f"{timeframe} candles cannot be empty."
+                )
+
+        if self.synchronized_data is None:
+            self.synchronized_data = SimpleNamespace(
+                assessment_time=assessment_time,
+                h4_candles=h4_candles.copy(),
+                h1_candles=h1_candles.copy(),
+                m15_candles=m15_candles.copy(),
+                m5_candles=m5_candles.copy(),
+                latest_candle_close_times={},
+            )
+
+        return self.synchronized_data
+
+
+class FakeMarketStructureEngine:
+    def __init__(self):
+        self.multi_timeframe_calls = []
+        self.analyze_calls = []
+
+        self.h4_result = SimpleNamespace(
+            trend_snapshots=("H4_SNAPSHOT",)
+        )
+
+        self.h1_result = SimpleNamespace(
+            trend_snapshots=("H1_SNAPSHOT",)
+        )
+
+        self.multi_timeframe_result = SimpleNamespace(
+            h4_analysis=self.h4_result,
+            h1_analysis=self.h1_result,
+            alignment="ALIGNED",
+        )
+
+    def analyze_multi_timeframe(
+        self,
+        h4_candles,
+        h1_candles,
+        assessment_time,
+    ):
+        self.multi_timeframe_calls.append(
+            {
+                "h4_candles": h4_candles,
+                "h1_candles": h1_candles,
+                "assessment_time": assessment_time,
+            }
+        )
+
+        return self.multi_timeframe_result
+
+    def analyze(self, candles, timeframe="H1"):
+        result = SimpleNamespace(
+            timeframe=timeframe,
+            candle_data=candles,
+        )
+
+        self.analyze_calls.append(
+            {
+                "candles": candles,
+                "timeframe": timeframe,
+                "result": result,
+            }
+        )
+
+        return result
+
+
+class FakeM15SetupDetector:
+    def __init__(self):
+        self.calls = []
+        self.result = SimpleNamespace(
+            qualified_setups=("QUALIFIED_SETUP",)
+        )
+
+    def detect(
+        self,
+        candles,
+        market_structure,
+        h4_snapshots,
+        h1_snapshots,
+    ):
+        self.calls.append(
+            {
+                "candles": candles,
+                "market_structure": market_structure,
+                "h4_snapshots": h4_snapshots,
+                "h1_snapshots": h1_snapshots,
+            }
+        )
+
+        return self.result
+
+
+class FakeM5ConfirmationDetector:
+    def __init__(self):
+        self.calls = []
+
+        self.result = SimpleNamespace(
+            confirmed=("CONFIRMED_SETUP",),
+            waiting=("WAITING_SETUP",),
+            expired=("EXPIRED_SETUP",),
+            rejected=("REJECTED_SETUP",),
+        )
+
+    def detect(
+        self,
+        m15_setups,
+        m5_candles,
+        m5_market_structure,
+    ):
+        self.calls.append(
+            {
+                "m15_setups": m15_setups,
+                "m5_candles": m5_candles,
+                "m5_market_structure": m5_market_structure,
+            }
+        )
+
+        return self.result
+
+
+@pytest.fixture
+def candle_data():
+    return {
+        "H4": pd.DataFrame({"close": [100, 101]}),
+        "H1": pd.DataFrame({"close": [100, 101]}),
+        "M15": pd.DataFrame({"close": [100, 101]}),
+        "M5": pd.DataFrame({"close": [100, 101]}),
+    }
+
+
+@pytest.fixture
+def assessment_time():
+    return pd.Timestamp("2026-01-01 12:00:00", tz="UTC")
+
+
+@pytest.fixture
+def pipeline(candle_data):
+    engine = FakeMarketStructureEngine()
+    m15_detector = FakeM15SetupDetector()
+    m5_detector = FakeM5ConfirmationDetector()
+    synchronizer = FakeTimeframeDataSynchronizer()
+
+    orchestrator = StrategyOrchestrator(
+        market_structure_engine=engine,
+        m15_setup_detector=m15_detector,
+        m5_confirmation_detector=m5_detector,
+        timeframe_data_synchronizer=synchronizer,
+    )
+
+    return {
+        "orchestrator": orchestrator,
+        "engine": engine,
+        "m15_detector": m15_detector,
+        "m5_detector": m5_detector,
+        "synchronizer": synchronizer,
+        "candles": candle_data,
+    }
+
+
+def run_pipeline(pipeline, assessment_time):
+    candles = pipeline["candles"]
+
+    return pipeline["orchestrator"].analyze(
+        h4_candles=candles["H4"],
+        h1_candles=candles["H1"],
+        m15_candles=candles["M15"],
+        m5_candles=candles["M5"],
+        assessment_time=assessment_time,
+    )
+
+
+def test_complete_pipeline_returns_consolidated_result(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    assert isinstance(result, StrategyPipelineResult)
+    assert result.assessment_time == assessment_time
+    assert result.alignment == "ALIGNED"
+    assert result.qualified_setups == ("QUALIFIED_SETUP",)
+    assert result.confirmed_setups == ("CONFIRMED_SETUP",)
+    assert result.waiting_setups == ("WAITING_SETUP",)
+    assert result.expired_setups == ("EXPIRED_SETUP",)
+    assert result.rejected_setups == ("REJECTED_SETUP",)
+    assert result.synchronized_data is not None
+
+
+def test_synchronizer_receives_all_original_inputs(
+    pipeline, assessment_time
+):
+    candles = pipeline["candles"]
+
+    run_pipeline(pipeline, assessment_time)
+
+    assert len(pipeline["synchronizer"].calls) == 1
+
+    call = pipeline["synchronizer"].calls[0]
+
+    assert call["h4_candles"] is candles["H4"]
+    assert call["h1_candles"] is candles["H1"]
+    assert call["m15_candles"] is candles["M15"]
+    assert call["m5_candles"] is candles["M5"]
+    assert call["assessment_time"] is assessment_time
+
+
+def test_h4_h1_analysis_uses_synchronized_inputs(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    call = pipeline["engine"].multi_timeframe_calls[0]
+
+    assert call["h4_candles"] is result.synchronized_data.h4_candles
+    assert call["h1_candles"] is result.synchronized_data.h1_candles
+    assert call["assessment_time"] == result.assessment_time
+
+
+def test_m15_detector_receives_h4_h1_snapshots(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    call = pipeline["m15_detector"].calls[0]
+
+    assert call["h4_snapshots"] == ("H4_SNAPSHOT",)
+    assert call["h1_snapshots"] == ("H1_SNAPSHOT",)
+    assert call["market_structure"] is result.m15_market_structure
+    assert call["candles"] is result.synchronized_data.m15_candles
+
+
+def test_m5_detector_receives_m15_result_and_synchronized_m5(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    call = pipeline["m5_detector"].calls[0]
+
+    assert call["m15_setups"] is result.m15_setups
+    assert call["m5_candles"] is result.synchronized_data.m5_candles
+    assert call["m5_market_structure"] is result.m5_market_structure
+
+
+def test_market_structure_engine_analyses_m15_and_m5(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    calls = pipeline["engine"].analyze_calls
+
+    assert len(calls) == 2
+    assert calls[0]["timeframe"] == "M15"
+    assert calls[0]["candles"] is result.synchronized_data.m15_candles
+    assert calls[1]["timeframe"] == "M5"
+    assert calls[1]["candles"] is result.synchronized_data.m5_candles
+
+
+def test_pipeline_result_retains_synchronization_result(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    assert (
+        result.synchronized_data
+        is pipeline["synchronizer"].synchronized_data
+    )
+
+
+@pytest.mark.parametrize("timeframe", ["H4", "H1", "M15", "M5"])
+def test_empty_candle_input_is_rejected(
+    pipeline, assessment_time, timeframe
+):
+    pipeline["candles"][timeframe] = pd.DataFrame()
+
+    with pytest.raises(ValueError):
+        run_pipeline(pipeline, assessment_time)
+
+    assert pipeline["engine"].multi_timeframe_calls == []
+
+
+@pytest.mark.parametrize("timeframe", ["H4", "H1", "M15", "M5"])
+def test_non_dataframe_input_is_rejected(
+    pipeline, assessment_time, timeframe
+):
+    pipeline["candles"][timeframe] = [100, 101]
+
+    with pytest.raises(TypeError):
+        run_pipeline(pipeline, assessment_time)
+
+    assert pipeline["engine"].multi_timeframe_calls == []
+
+
+def test_synchronization_failure_stops_the_pipeline(
+    pipeline, assessment_time
+):
+    pipeline["candles"]["M5"] = pd.DataFrame()
+
+    with pytest.raises(ValueError):
+        run_pipeline(pipeline, assessment_time)
+
+    assert pipeline["engine"].multi_timeframe_calls == []
+    assert pipeline["engine"].analyze_calls == []
+    assert pipeline["m15_detector"].calls == []
+    assert pipeline["m5_detector"].calls == []
+
+
+def test_pipeline_result_exposes_setup_categories(
+    pipeline, assessment_time
+):
+    result = run_pipeline(pipeline, assessment_time)
+
+    assert result.qualified_setups == ("QUALIFIED_SETUP",)
+    assert result.confirmed_setups == ("CONFIRMED_SETUP",)
+    assert result.waiting_setups == ("WAITING_SETUP",)
+    assert result.expired_setups == ("EXPIRED_SETUP",)
+    assert result.rejected_setups == ("REJECTED_SETUP",)
+
+
+==========================================================================================
+FILE: tests\test_m5_confirmation_detector.py
+==========================================================================================
+
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+
+from research.swing_detection.break_models import StructureBreak
+from strategy.m5_confirmation_detector import (
+    M5ConfirmationDetector,
+)
+
+
+UTC = timezone.utc
+BASE_TIME = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+
+
+def make_candles(count, start_time=BASE_TIME):
+    return pd.DataFrame(
+        {
+            "time": [
+                start_time + timedelta(minutes=5 * index)
+                for index in range(count)
+            ],
+            "open": [100.0] * count,
+            "high": [101.0] * count,
+            "low": [99.0] * count,
+            "close": [100.5] * count,
+        }
+    )
+
+
+def make_setup(
+    direction="BULLISH",
+    state="QUALIFIED",
+    qualification_time=BASE_TIME,
+    break_time=None,
+    break_index=1,
+    broken_level=100.0,
+):
+    if break_time is None:
+        break_time = BASE_TIME - timedelta(minutes=15)
+
+    return SimpleNamespace(
+        direction=direction,
+        state=state,
+        break_time=break_time,
+        break_index=break_index,
+        broken_level=broken_level,
+        qualification_time=qualification_time,
+    )
+
+
+def make_bos(
+    direction="BULLISH",
+    break_index=0,
+    break_time=None,
+    event_type="BOS",
+):
+    if break_time is None:
+        break_time = (
+            BASE_TIME + timedelta(minutes=5 * break_index)
+        )
+
+    return StructureBreak(
+        event_type=event_type,
+        direction=direction,
+        break_time=break_time,
+        break_index=break_index,
+        level_price=100.0,
+        level_swing=None,
+        close_price=101.0,
+        prior_trend="BULLISH",
+    )
+
+
+def make_market_structure(
+    candle_count,
+    bos_events=None,
+    timeframe="M5",
+):
+    return SimpleNamespace(
+        timeframe=timeframe,
+        candle_count=candle_count,
+        bos_events=tuple(bos_events or []),
+    )
+
+
+def run_detector(
+    setup,
+    candles,
+    bos_events=None,
+    window=12,
+):
+    detector = M5ConfirmationDetector(
+        confirmation_window_candles=window,
+    )
+
+    m15_result = SimpleNamespace(setups=(setup,))
+
+    market_structure = make_market_structure(
+        candle_count=len(candles),
+        bos_events=bos_events,
+    )
+
+    return detector.detect(
+        m15_setups=m15_result,
+        m5_candles=candles,
+        m5_market_structure=market_structure,
+    )
+
+
+class TestM5ConfirmationDetector:
+
+    def test_bullish_setup_confirmed_by_bullish_bos(self):
+        setup = make_setup(direction="BULLISH")
+        candles = make_candles(5)
+        bos = make_bos(
+            direction="BULLISH",
+            break_index=2,
+        )
+
+        result = run_detector(setup, candles, [bos])
+
+        assert len(result.confirmed) == 1
+        assert result.confirmed[0].state == "CONFIRMED"
+        assert result.confirmed[0].direction == "BULLISH"
+        assert result.confirmed[0].confirmation_break_index == 2
+
+    def test_bearish_setup_confirmed_by_bearish_bos(self):
+        setup = make_setup(direction="BEARISH")
+        candles = make_candles(5)
+        bos = make_bos(
+            direction="BEARISH",
+            break_index=1,
+        )
+
+        result = run_detector(setup, candles, [bos])
+
+        assert len(result.confirmed) == 1
+        assert result.confirmed[0].state == "CONFIRMED"
+        assert result.confirmed[0].direction == "BEARISH"
+
+    def test_bos_before_qualification_is_ignored(self):
+        setup = make_setup(
+            qualification_time=BASE_TIME,
+        )
+
+        candles = make_candles(
+            12,
+            start_time=BASE_TIME - timedelta(minutes=5),
+        )
+
+        bos = make_bos(
+            direction="BULLISH",
+            break_index=0,
+            break_time=BASE_TIME - timedelta(minutes=5),
+        )
+
+        result = run_detector(setup, candles, [bos])
+
+        assert len(result.confirmed) == 0
+        assert len(result.waiting) == 1
+        assert result.waiting[0].candles_elapsed == 11
+
+    def test_opposite_direction_bos_is_ignored(self):
+        setup = make_setup(direction="BULLISH")
+        candles = make_candles(5)
+
+        bos = make_bos(
+            direction="BEARISH",
+            break_index=2,
+        )
+
+        result = run_detector(setup, candles, [bos])
+
+        assert len(result.confirmed) == 0
+        assert len(result.waiting) == 1
+
+    def test_incomplete_confirmation_window_remains_waiting(self):
+        setup = make_setup()
+        candles = make_candles(6)
+
+        result = run_detector(setup, candles)
+
+        assert len(result.waiting) == 1
+        assert result.waiting[0].candles_elapsed == 6
+
+    def test_setup_expires_after_twelve_eligible_candles(self):
+        setup = make_setup()
+        candles = make_candles(12)
+
+        result = run_detector(setup, candles)
+
+        assert len(result.expired) == 1
+        assert result.expired[0].candles_elapsed == 12
+
+    def test_bos_on_twelfth_candle_confirms_setup(self):
+        setup = make_setup()
+        candles = make_candles(12)
+
+        bos = make_bos(
+            direction="BULLISH",
+            break_index=11,
+        )
+
+        result = run_detector(setup, candles, [bos])
+
+        assert len(result.confirmed) == 1
+        assert result.confirmed[0].confirmation_break_index == 11
+
+    def test_bos_after_twelfth_candle_does_not_confirm(self):
+        setup = make_setup()
+        candles = make_candles(13)
+
+        bos = make_bos(
+            direction="BULLISH",
+            break_index=12,
+        )
+
+        result = run_detector(setup, candles, [bos])
+
+        assert len(result.confirmed) == 0
+        assert len(result.expired) == 1
+
+    def test_non_qualified_m15_setup_is_rejected(self):
+        setup = make_setup(state="WAITING_FOR_RETEST")
+        candles = make_candles(5)
+
+        result = run_detector(setup, candles)
+
+        assert len(result.rejected) == 1
+        assert result.rejected[0].state == "REJECTED"
+
+    def test_earliest_matching_bos_is_selected(self):
+        setup = make_setup()
+        candles = make_candles(8)
+
+        later_bos = make_bos(
+            direction="BULLISH",
+            break_index=5,
+        )
+
+        earlier_bos = make_bos(
+            direction="BULLISH",
+            break_index=2,
+        )
+
+        result = run_detector(
+            setup,
+            candles,
+            [later_bos, earlier_bos],
+        )
+
+        assert len(result.confirmed) == 1
+        assert result.confirmed[0].confirmation_break_index == 2
+
+    def test_setup_identity_is_stable(self):
+        setup = make_setup()
+        candles = make_candles(5)
+
+        first_result = run_detector(setup, candles)
+        second_result = run_detector(setup, candles)
+
+        assert (
+            first_result.waiting[0].setup_id
+            == second_result.waiting[0].setup_id
+        )
+
+    def test_candle_count_mismatch_is_rejected(self):
+        setup = make_setup()
+        candles = make_candles(5)
+
+        detector = M5ConfirmationDetector()
+
+        m15_result = SimpleNamespace(setups=(setup,))
+
+        market_structure = make_market_structure(
+            candle_count=4,
+        )
+
+        with pytest.raises(ValueError, match="candle count"):
+            detector.detect(
+                m15_result,
+                candles,
+                market_structure,
+            )
+
+    def test_non_m5_market_structure_is_rejected(self):
+        setup = make_setup()
+        candles = make_candles(5)
+
+        detector = M5ConfirmationDetector()
+
+        m15_result = SimpleNamespace(setups=(setup,))
+
+        market_structure = make_market_structure(
+            candle_count=5,
+            timeframe="M15",
+        )
+
+        with pytest.raises(ValueError, match="M5 timeframe"):
+            detector.detect(
+                m15_result,
+                candles,
+                market_structure,
+            )
+
+    def test_naive_candle_timestamp_is_rejected(self):
+        setup = make_setup()
+        candles = make_candles(5)
+
+        candles["time"] = candles["time"].astype(object)
+        candles.loc[0, "time"] = datetime(2026, 1, 1, 10, 0)
+
+        with pytest.raises(ValueError, match="timezone-aware"):
+            run_detector(setup, candles)
+
+    def test_bos_time_must_match_its_candle_index(self):
+        setup = make_setup()
+        candles = make_candles(5)
+
+        bos = make_bos(
+            direction="BULLISH",
+            break_index=2,
+            break_time=BASE_TIME + timedelta(minutes=5),
+        )
+
+        with pytest.raises(ValueError, match="must match"):
+            run_detector(setup, candles, [bos])
+
+    def test_duplicate_candle_timestamps_are_rejected(self):
+        setup = make_setup()
+        candles = make_candles(5)
+
+        candles.loc[2, "time"] = candles.loc[1, "time"]
+
+        with pytest.raises(ValueError, match="strictly increasing"):
+            run_detector(setup, candles)
+
+    def test_result_properties_filter_confirmation_states(self):
+        qualified_setup = make_setup(
+            direction="BULLISH",
+            qualification_time=BASE_TIME,
+        )
+
+        waiting_setup = make_setup(
+            direction="BEARISH",
+            qualification_time=BASE_TIME,
+        )
+
+        rejected_setup = make_setup(
+            state="WAITING_FOR_RETEST",
+        )
+
+        candles = make_candles(5)
+
+        detector = M5ConfirmationDetector()
+
+        m15_result = SimpleNamespace(
+            setups=(
+                qualified_setup,
+                waiting_setup,
+                rejected_setup,
+            )
+        )
+
+        market_structure = make_market_structure(
+            candle_count=5,
+        )
+
+        result = detector.detect(
+            m15_result,
+            candles,
+            market_structure,
+        )
+
+        assert len(result.waiting) == 2
+        assert len(result.rejected) == 1
+        assert len(result.confirmed) == 0
+        assert len(result.expired) == 0
+
+

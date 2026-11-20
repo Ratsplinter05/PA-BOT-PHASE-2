@@ -1,0 +1,624 @@
+﻿PA-MS HISTORICAL VALIDATION - STEP 1
+
+====================================================================================================
+FILE: .\research\historical_validation.py
+====================================================================================================
+
+
+from datetime import datetime, timezone
+
+import numpy as np
+import pandas as pd
+
+
+TIMEFRAME_SECONDS = {
+    "M5": 300,
+    "M15": 900,
+    "H1": 3600,
+    "H4": 14400,
+}
+
+
+class HistoricalDataValidator:
+    """
+    Validates historical OHLC candle datasets for research.
+
+    Checks:
+    - Required columns
+    - UTC-aware timestamps
+    - Duplicate timestamps
+    - Chronological ordering
+    - Missing and non-finite values
+    - Positive price values
+    - OHLC consistency
+    - Non-negative volume and spread
+    - Incomplete candles
+    - Potential missing candle intervals
+
+    Potential gaps are reported as warnings because
+    market closures and trading sessions can create
+    legitimate gaps.
+
+    This validator does not modify the input dataset.
+    """
+
+    REQUIRED_COLUMNS = [
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "tick_volume",
+        "spread",
+        "real_volume",
+    ]
+
+    PRICE_COLUMNS = [
+        "open",
+        "high",
+        "low",
+        "close",
+    ]
+
+    NON_NEGATIVE_COLUMNS = [
+        "tick_volume",
+        "spread",
+        "real_volume",
+    ]
+
+    def validate(self, df, timeframe):
+        """
+        Validate one historical candle dataset.
+
+        Args:
+            df: Historical candle DataFrame.
+            timeframe: M5, M15, H1 or H4.
+
+        Returns:
+            Dictionary containing validation results.
+        """
+
+        result = {
+            "status": "FAIL",
+            "valid": False,
+            "timeframe": timeframe,
+            "candle_count": 0,
+            "duplicate_timestamps": 0,
+            "non_chronological_pairs": 0,
+            "invalid_ohlc_rows": 0,
+            "missing_values": 0,
+            "non_finite_values": 0,
+            "non_positive_price_rows": 0,
+            "negative_value_rows": 0,
+            "forming_candles": 0,
+            "future_timestamps": 0,
+            "gap_count": 0,
+            "estimated_missing_intervals": 0,
+            "gap_details": [],
+            "errors": [],
+            "warnings": [],
+        }
+
+        # Validate timeframe.
+        if timeframe not in TIMEFRAME_SECONDS:
+            result["errors"].append(
+                f"Unsupported timeframe: {timeframe}"
+            )
+            return result
+
+        # Validate DataFrame.
+        if not isinstance(df, pd.DataFrame):
+            result["errors"].append(
+                "Input must be a pandas DataFrame."
+            )
+            return result
+
+        if df.empty:
+            result["errors"].append(
+                "Historical dataset is empty."
+            )
+            return result
+
+        result["candle_count"] = len(df)
+
+        # Check required columns.
+        missing_columns = [
+            column
+            for column in self.REQUIRED_COLUMNS
+            if column not in df.columns
+        ]
+
+        if missing_columns:
+            result["errors"].append(
+                f"Missing required columns: {missing_columns}"
+            )
+            return result
+
+        # Work on a copy to protect the original dataset.
+        data = df.copy()
+
+        # Validate timestamp data type.
+        if not pd.api.types.is_datetime64_any_dtype(
+            data["time"]
+        ):
+            result["errors"].append(
+                "Timestamp column must contain datetime values."
+            )
+            return result
+
+        # Validate timezone.
+        if data["time"].dt.tz is None:
+            result["errors"].append(
+                "Timestamps must be timezone-aware."
+            )
+            return result
+
+        if str(data["time"].dt.tz) != "UTC":
+            result["errors"].append(
+                "Timestamps must use UTC timezone."
+            )
+            return result
+
+        # Check missing values.
+        result["missing_values"] = int(
+            data[self.REQUIRED_COLUMNS].isna().sum().sum()
+        )
+
+        if result["missing_values"] > 0:
+            result["errors"].append(
+                "Dataset contains missing values."
+            )
+
+        # Check duplicate timestamps.
+        result["duplicate_timestamps"] = int(
+            data["time"].duplicated().sum()
+        )
+
+        if result["duplicate_timestamps"] > 0:
+            result["errors"].append(
+                "Duplicate candle timestamps detected."
+            )
+
+        # Check chronological order.
+        time_differences = data["time"].diff()
+
+        result["non_chronological_pairs"] = int(
+            (time_differences < pd.Timedelta(0)).sum()
+        )
+
+        if result["non_chronological_pairs"] > 0:
+            result["errors"].append(
+                "Candle timestamps are not chronological."
+            )
+
+        # Check future timestamps.
+        current_time = datetime.now(timezone.utc)
+
+        result["future_timestamps"] = int(
+            (data["time"] > current_time).sum()
+        )
+
+        if result["future_timestamps"] > 0:
+            result["errors"].append(
+                "Dataset contains future timestamps."
+            )
+
+        # Validate numeric columns.
+        numeric_columns = (
+            self.PRICE_COLUMNS
+            + self.NON_NEGATIVE_COLUMNS
+        )
+
+        for column in numeric_columns:
+
+            if not pd.api.types.is_numeric_dtype(
+                data[column]
+            ):
+                result["errors"].append(
+                    f"Column {column} must contain numeric values."
+                )
+                return result
+
+        # Check non-finite numeric values.
+        numeric_data = data[numeric_columns].to_numpy(
+            dtype=float,
+            na_value=np.nan,
+        )
+
+        non_finite_mask = ~np.isfinite(numeric_data)
+
+        result["non_finite_values"] = int(
+            non_finite_mask.sum()
+        )
+
+        if result["non_finite_values"] > 0:
+            result["errors"].append(
+                "Dataset contains non-finite numeric values."
+            )
+
+        # Check positive prices.
+        price_data = data[self.PRICE_COLUMNS]
+
+        non_positive_mask = (
+            price_data <= 0
+        ).any(axis=1)
+
+        result["non_positive_price_rows"] = int(
+            non_positive_mask.sum()
+        )
+
+        if result["non_positive_price_rows"] > 0:
+            result["errors"].append(
+                "Dataset contains non-positive prices."
+            )
+
+        # Check OHLC consistency.
+        invalid_ohlc_mask = (
+            (data["high"] < data["open"])
+            | (data["high"] < data["close"])
+            | (data["high"] < data["low"])
+            | (data["low"] > data["open"])
+            | (data["low"] > data["close"])
+        )
+
+        invalid_ohlc_mask = (
+            invalid_ohlc_mask
+            & data[self.PRICE_COLUMNS].notna().all(axis=1)
+        )
+
+        result["invalid_ohlc_rows"] = int(
+            invalid_ohlc_mask.sum()
+        )
+
+        if result["invalid_ohlc_rows"] > 0:
+            result["errors"].append(
+                "Dataset contains invalid OHLC relationships."
+            )
+
+        # Check non-negative volume and spread.
+        negative_mask = (
+            data[self.NON_NEGATIVE_COLUMNS] < 0
+        ).any(axis=1)
+
+        negative_mask = (
+            negative_mask
+            & data[self.NON_NEGATIVE_COLUMNS].notna().all(axis=1)
+        )
+
+        result["negative_value_rows"] = int(
+            negative_mask.sum()
+        )
+
+        if result["negative_value_rows"] > 0:
+            result["errors"].append(
+                "Dataset contains negative volume or spread values."
+            )
+
+        # Check incomplete candles if the field is available.
+        if "is_forming_candle" in data.columns:
+
+            result["forming_candles"] = int(
+                data["is_forming_candle"].fillna(True).sum()
+            )
+
+            if result["forming_candles"] > 0:
+                result["errors"].append(
+                    "Dataset contains incomplete candles."
+                )
+
+        # Detect potential missing candle intervals.
+        # Use sorted unique timestamps so duplicates do not
+        # create misleading interval calculations.
+        unique_times = (
+            data["time"]
+            .dropna()
+            .drop_duplicates()
+            .sort_values()
+        )
+
+        expected_seconds = TIMEFRAME_SECONDS[timeframe]
+
+        intervals = unique_times.diff().dropna()
+
+        gap_intervals = intervals[
+            intervals > pd.Timedelta(
+                seconds=expected_seconds
+            )
+        ]
+
+        for index, gap in gap_intervals.items():
+
+            previous_time = unique_times.loc[
+                unique_times.index[
+                    unique_times.index.get_loc(index) - 1
+                ]
+            ]
+
+            missing_intervals = max(
+                int(gap.total_seconds() // expected_seconds) - 1,
+                1,
+            )
+
+            result["gap_details"].append({
+                "previous_candle": previous_time.isoformat(),
+                "next_candle": unique_times.loc[index].isoformat(),
+                "gap_seconds": int(gap.total_seconds()),
+                "estimated_missing_intervals": missing_intervals,
+            })
+
+        result["gap_count"] = len(
+            result["gap_details"]
+        )
+
+        result["estimated_missing_intervals"] = sum(
+            gap["estimated_missing_intervals"]
+            for gap in result["gap_details"]
+        )
+
+        if result["gap_count"] > 0:
+            result["warnings"].append(
+                "Potential candle gaps detected. "
+                "Review broker trading sessions and market closures."
+            )
+
+        # Determine final status.
+        if result["errors"]:
+            result["status"] = "FAIL"
+            result["valid"] = False
+
+        elif result["warnings"]:
+            result["status"] = "WARNING"
+            result["valid"] = True
+
+        else:
+            result["status"] = "PASS"
+            result["valid"] = True
+
+        return result
+
+
+====================================================================================================
+FILE: .\tests\test_historical_validation.py
+====================================================================================================
+
+
+import unittest
+
+import numpy as np
+import pandas as pd
+
+from research.historical_validation import HistoricalDataValidator
+
+
+class TestHistoricalDataValidator(unittest.TestCase):
+
+    def setUp(self):
+        self.validator = HistoricalDataValidator()
+
+        self.data = pd.DataFrame({
+            "time": pd.date_range(
+                "2025-01-01 00:00:00",
+                periods=3,
+                freq="5min",
+                tz="UTC",
+            ),
+            "open": [1.1000, 1.1010, 1.1020],
+            "high": [1.1050, 1.1060, 1.1070],
+            "low": [1.0950, 1.0960, 1.0970],
+            "close": [1.1020, 1.1030, 1.1040],
+            "tick_volume": [100, 120, 110],
+            "spread": [10, 10, 12],
+            "real_volume": [0, 0, 0],
+            "is_forming_candle": [False, False, False],
+        })
+
+    def test_valid_dataset_passes(self):
+        result = self.validator.validate(
+            self.data,
+            "M5",
+        )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["candle_count"], 3)
+
+    def test_empty_dataset_fails(self):
+        result = self.validator.validate(
+            pd.DataFrame(),
+            "M5",
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertFalse(result["valid"])
+
+    def test_invalid_timeframe_fails(self):
+        result = self.validator.validate(
+            self.data,
+            "M1",
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_missing_columns_fail(self):
+        data = self.data.drop(columns=["spread"])
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertTrue(
+            any("Missing required columns" in error
+                for error in result["errors"])
+        )
+
+    def test_naive_timestamps_fail(self):
+        data = self.data.copy()
+
+        data["time"] = (
+            data["time"].dt.tz_localize(None)
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_non_utc_timestamps_fail(self):
+        data = self.data.copy()
+
+        data["time"] = (
+            data["time"].dt.tz_convert("Africa/Blantyre")
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_duplicate_timestamps_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "time"] = data.loc[0, "time"]
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["duplicate_timestamps"],
+            1,
+        )
+
+    def test_unsorted_timestamps_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "time"] = (
+            data.loc[0, "time"] - pd.Timedelta(minutes=5)
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(
+            result["non_chronological_pairs"],
+            0,
+        )
+
+    def test_missing_values_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "close"] = np.nan
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(result["missing_values"], 0)
+
+    def test_non_finite_values_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "close"] = np.inf
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(
+            result["non_finite_values"],
+            0,
+        )
+
+    def test_non_positive_prices_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "close"] = 0
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["non_positive_price_rows"],
+            1,
+        )
+
+    def test_invalid_ohlc_relationships_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "high"] = 1.0900
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["invalid_ohlc_rows"],
+            1,
+        )
+
+    def test_negative_volume_fails(self):
+        data = self.data.copy()
+
+        data.loc[1, "tick_volume"] = -10
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["negative_value_rows"],
+            1,
+        )
+
+    def test_forming_candles_fail(self):
+        data = self.data.copy()
+
+        data.loc[1, "is_forming_candle"] = True
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(
+            result["forming_candles"],
+            1,
+        )
+
+    def test_missing_candle_interval_produces_warning(self):
+        data = self.data.copy()
+
+        data.loc[2, "time"] = (
+            data.loc[2, "time"] + pd.Timedelta(minutes=10)
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "WARNING")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["gap_count"], 1)
+        self.assertEqual(
+            result["estimated_missing_intervals"],
+            2,
+        )
+
+    def test_future_timestamps_fail(self):
+        data = self.data.copy()
+
+        data.loc[2, "time"] = pd.Timestamp(
+            "2099-01-01 00:00:00",
+            tz="UTC",
+        )
+
+        result = self.validator.validate(data, "M5")
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertGreater(
+            result["future_timestamps"],
+            0,
+        )
+
+    def test_original_dataset_is_not_modified(self):
+        original = self.data.copy(deep=True)
+
+        self.validator.validate(self.data, "M5")
+
+        pd.testing.assert_frame_equal(
+            self.data,
+            original,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+

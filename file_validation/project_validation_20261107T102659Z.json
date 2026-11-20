@@ -1,0 +1,1368 @@
+{
+  "run_time_utc": "2026-11-07T10:26:59.205091+00:00",
+  "project_root": "C:\\Users\\tembo\\Documents\\Forex Folder\\PA_MS_Trading_Bot_Phase1",
+  "inventory": {
+    "all_files": [
+      "research\\__init__.py",
+      "research\\analyze_alignment.py",
+      "research\\analyze_choch.py",
+      "research\\analyze_h1_trend.py",
+      "research\\analyze_h4_trend.py",
+      "research\\analyze_m15_bos.py",
+      "research\\analyze_m15_trend.py",
+      "research\\analyze_protected_swings.py",
+      "research\\audit_m15_m5_research.py",
+      "research\\collect_h4_research.py",
+      "research\\collect_m15_m5_research.py",
+      "research\\diagnose_m15_batch_boundaries.py",
+      "research\\diagnose_m15_history.py",
+      "research\\diagnose_m5_gaps.py",
+      "research\\historical_alignment_transition_analysis.py",
+      "research\\historical_alignment_transition_analysis_v2.py",
+      "research\\historical_alignment_transition_analysis_v3.py",
+      "research\\historical_alignment_validation.py",
+      "research\\historical_data.py",
+      "research\\historical_pipeline.py",
+      "research\\historical_storage.py",
+      "research\\historical_validation.py",
+      "research\\recover_m15_history.py",
+      "research\\swing_detection\\__init__.py",
+      "research\\swing_detection\\alignment_engine.py",
+      "research\\swing_detection\\alignment_models.py",
+      "research\\swing_detection\\atr_calculator.py",
+      "research\\swing_detection\\bos_detector.py",
+      "research\\swing_detection\\break_models.py",
+      "research\\swing_detection\\choch_detector.py",
+      "research\\swing_detection\\fractal_detector.py",
+      "research\\swing_detection\\market_structure_engine.py",
+      "research\\swing_detection\\protected_level_registry.py",
+      "research\\swing_detection\\protected_models.py",
+      "research\\swing_detection\\protected_swing_tracker.py",
+      "research\\swing_detection\\registry_models.py",
+      "research\\swing_detection\\structure_classifier.py",
+      "research\\swing_detection\\structure_models.py",
+      "research\\swing_detection\\swing_models.py",
+      "research\\swing_detection\\trend_classifier.py",
+      "research\\swing_detection\\trend_models.py",
+      "src\\__init__.py",
+      "src\\config.py",
+      "src\\data_validation.py",
+      "src\\logger.py",
+      "src\\market_data.py",
+      "src\\mt5_connection.py",
+      "src\\phase1_check.py",
+      "tests\\diagnostics\\audit_eurusd_stored_history.py",
+      "tests\\diagnostics\\inspect_eurusd_h1_mismatch.py",
+      "tests\\diagnostics\\run_full_system_diagnostic.py",
+      "tests\\diagnostics\\validate_project.py",
+      "tests\\diagnostics\\verify_eurusd_broker_history.py",
+      "tests\\test_alignment_engine.py",
+      "tests\\test_atr_calculator.py",
+      "tests\\test_atr_reference_validation.py",
+      "tests\\test_bos_detector.py",
+      "tests\\test_choch_detector.py",
+      "tests\\test_data_validation.py",
+      "tests\\test_fractal_detector.py",
+      "tests\\test_historical_data.py",
+      "tests\\test_historical_pipeline.py",
+      "tests\\test_historical_storage.py",
+      "tests\\test_historical_validation.py",
+      "tests\\test_market_data.py",
+      "tests\\test_market_structure_end_to_end.py",
+      "tests\\test_market_structure_engine.py",
+      "tests\\test_market_structure_lifecycle.py",
+      "tests\\test_market_structure_multi_bos.py",
+      "tests\\test_market_structure_multi_timeframe.py",
+      "tests\\test_protected_level_registry.py",
+      "tests\\test_protected_swing_tracker.py",
+      "tests\\test_structure_classifier.py",
+      "tests\\test_trend_classifier.py",
+      "tests\\verify_data_integrity.py",
+      "tests\\verify_live_quotes.py",
+      "tests\\verify_market_data.py"
+    ],
+    "python_files": [
+      "research\\__init__.py",
+      "research\\analyze_alignment.py",
+      "research\\analyze_choch.py",
+      "research\\analyze_h1_trend.py",
+      "research\\analyze_h4_trend.py",
+      "research\\analyze_m15_bos.py",
+      "research\\analyze_m15_trend.py",
+      "research\\analyze_protected_swings.py",
+      "research\\audit_m15_m5_research.py",
+      "research\\collect_h4_research.py",
+      "research\\collect_m15_m5_research.py",
+      "research\\diagnose_m15_batch_boundaries.py",
+      "research\\diagnose_m15_history.py",
+      "research\\diagnose_m5_gaps.py",
+      "research\\historical_alignment_transition_analysis.py",
+      "research\\historical_alignment_transition_analysis_v2.py",
+      "research\\historical_alignment_transition_analysis_v3.py",
+      "research\\historical_alignment_validation.py",
+      "research\\historical_data.py",
+      "research\\historical_pipeline.py",
+      "research\\historical_storage.py",
+      "research\\historical_validation.py",
+      "research\\recover_m15_history.py",
+      "research\\swing_detection\\__init__.py",
+      "research\\swing_detection\\alignment_engine.py",
+      "research\\swing_detection\\alignment_models.py",
+      "research\\swing_detection\\atr_calculator.py",
+      "research\\swing_detection\\bos_detector.py",
+      "research\\swing_detection\\break_models.py",
+      "research\\swing_detection\\choch_detector.py",
+      "research\\swing_detection\\fractal_detector.py",
+      "research\\swing_detection\\market_structure_engine.py",
+      "research\\swing_detection\\protected_level_registry.py",
+      "research\\swing_detection\\protected_models.py",
+      "research\\swing_detection\\protected_swing_tracker.py",
+      "research\\swing_detection\\registry_models.py",
+      "research\\swing_detection\\structure_classifier.py",
+      "research\\swing_detection\\structure_models.py",
+      "research\\swing_detection\\swing_models.py",
+      "research\\swing_detection\\trend_classifier.py",
+      "research\\swing_detection\\trend_models.py",
+      "src\\__init__.py",
+      "src\\config.py",
+      "src\\data_validation.py",
+      "src\\logger.py",
+      "src\\market_data.py",
+      "src\\mt5_connection.py",
+      "src\\phase1_check.py",
+      "tests\\diagnostics\\audit_eurusd_stored_history.py",
+      "tests\\diagnostics\\inspect_eurusd_h1_mismatch.py",
+      "tests\\diagnostics\\run_full_system_diagnostic.py",
+      "tests\\diagnostics\\validate_project.py",
+      "tests\\diagnostics\\verify_eurusd_broker_history.py",
+      "tests\\test_alignment_engine.py",
+      "tests\\test_atr_calculator.py",
+      "tests\\test_atr_reference_validation.py",
+      "tests\\test_bos_detector.py",
+      "tests\\test_choch_detector.py",
+      "tests\\test_data_validation.py",
+      "tests\\test_fractal_detector.py",
+      "tests\\test_historical_data.py",
+      "tests\\test_historical_pipeline.py",
+      "tests\\test_historical_storage.py",
+      "tests\\test_historical_validation.py",
+      "tests\\test_market_data.py",
+      "tests\\test_market_structure_end_to_end.py",
+      "tests\\test_market_structure_engine.py",
+      "tests\\test_market_structure_lifecycle.py",
+      "tests\\test_market_structure_multi_bos.py",
+      "tests\\test_market_structure_multi_timeframe.py",
+      "tests\\test_protected_level_registry.py",
+      "tests\\test_protected_swing_tracker.py",
+      "tests\\test_structure_classifier.py",
+      "tests\\test_trend_classifier.py",
+      "tests\\verify_data_integrity.py",
+      "tests\\verify_live_quotes.py",
+      "tests\\verify_market_data.py"
+    ],
+    "backup_files": [
+      "research\\historical_data.py.backup_20261104_124926",
+      "research\\historical_validation.py.bak_20261104_124356",
+      "tests\\test_historical_data.py.backup_20261104_124926",
+      "tests\\test_historical_validation.py.bak_20261104_124356"
+    ],
+    "cache_files": [
+      "research\\__pycache__\\__init__.cpython-311.pyc",
+      "research\\__pycache__\\analyze_alignment.cpython-311.pyc",
+      "research\\__pycache__\\analyze_choch.cpython-311.pyc",
+      "research\\__pycache__\\analyze_h1_trend.cpython-311.pyc",
+      "research\\__pycache__\\analyze_h4_trend.cpython-311.pyc",
+      "research\\__pycache__\\analyze_m15_bos.cpython-311.pyc",
+      "research\\__pycache__\\analyze_m15_trend.cpython-311.pyc",
+      "research\\__pycache__\\analyze_protected_swings.cpython-311.pyc",
+      "research\\__pycache__\\audit_m15_m5_research.cpython-311.pyc",
+      "research\\__pycache__\\collect_h4_research.cpython-311.pyc",
+      "research\\__pycache__\\collect_m15_m5_research.cpython-311.pyc",
+      "research\\__pycache__\\diagnose_m15_batch_boundaries.cpython-311.pyc",
+      "research\\__pycache__\\diagnose_m15_history.cpython-311.pyc",
+      "research\\__pycache__\\diagnose_m5_gaps.cpython-311.pyc",
+      "research\\__pycache__\\historical_alignment_transition_analysis.cpython-311.pyc",
+      "research\\__pycache__\\historical_alignment_transition_analysis_v2.cpython-311.pyc",
+      "research\\__pycache__\\historical_alignment_transition_analysis_v3.cpython-311.pyc",
+      "research\\__pycache__\\historical_alignment_validation.cpython-311.pyc",
+      "research\\__pycache__\\historical_data.cpython-311.pyc",
+      "research\\__pycache__\\historical_pipeline.cpython-311.pyc",
+      "research\\__pycache__\\historical_storage.cpython-311.pyc",
+      "research\\__pycache__\\historical_validation.cpython-311.pyc",
+      "research\\__pycache__\\recover_m15_history.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\__init__.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\alignment_engine.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\alignment_models.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\atr_calculator.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\bos_detector.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\break_models.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\choch_detector.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\fractal_detector.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\market_structure_engine.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\protected_level_registry.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\protected_models.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\protected_swing_tracker.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\registry_models.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\structure_classifier.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\structure_models.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\swing_models.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\trend_classifier.cpython-311.pyc",
+      "research\\swing_detection\\__pycache__\\trend_models.cpython-311.pyc",
+      "src\\__pycache__\\__init__.cpython-311.pyc",
+      "src\\__pycache__\\config.cpython-311.pyc",
+      "src\\__pycache__\\data_validation.cpython-311.pyc",
+      "src\\__pycache__\\logger.cpython-311.pyc",
+      "src\\__pycache__\\market_data.cpython-311.pyc",
+      "src\\__pycache__\\mt5_connection.cpython-311.pyc",
+      "src\\__pycache__\\phase1_check.cpython-311.pyc",
+      "tests\\__pycache__\\test_alignment_engine.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_alignment_engine.cpython-311.pyc",
+      "tests\\__pycache__\\test_atr_calculator.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_atr_calculator.cpython-311.pyc",
+      "tests\\__pycache__\\test_atr_reference_validation.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_atr_reference_validation.cpython-311.pyc",
+      "tests\\__pycache__\\test_bos_detector.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_bos_detector.cpython-311.pyc",
+      "tests\\__pycache__\\test_choch_detector.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_choch_detector.cpython-311.pyc",
+      "tests\\__pycache__\\test_data_validation.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_data_validation.cpython-311.pyc",
+      "tests\\__pycache__\\test_fractal_detector.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_fractal_detector.cpython-311.pyc",
+      "tests\\__pycache__\\test_historical_data.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_historical_data.cpython-311.pyc",
+      "tests\\__pycache__\\test_historical_pipeline.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_historical_pipeline.cpython-311.pyc",
+      "tests\\__pycache__\\test_historical_storage.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_historical_storage.cpython-311.pyc",
+      "tests\\__pycache__\\test_historical_validation.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_historical_validation.cpython-311.pyc",
+      "tests\\__pycache__\\test_market_data.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_market_data.cpython-311.pyc",
+      "tests\\__pycache__\\test_market_structure_end_to_end.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_market_structure_end_to_end.cpython-311.pyc",
+      "tests\\__pycache__\\test_market_structure_engine.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_market_structure_engine.cpython-311.pyc",
+      "tests\\__pycache__\\test_market_structure_lifecycle.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_market_structure_lifecycle.cpython-311.pyc",
+      "tests\\__pycache__\\test_market_structure_multi_bos.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_market_structure_multi_bos.cpython-311.pyc",
+      "tests\\__pycache__\\test_market_structure_multi_timeframe.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_market_structure_multi_timeframe.cpython-311.pyc",
+      "tests\\__pycache__\\test_protected_level_registry.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_protected_level_registry.cpython-311.pyc",
+      "tests\\__pycache__\\test_protected_swing_tracker.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_protected_swing_tracker.cpython-311.pyc",
+      "tests\\__pycache__\\test_structure_classifier.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_structure_classifier.cpython-311.pyc",
+      "tests\\__pycache__\\test_trend_classifier.cpython-311-pytest-9.2.0.pyc",
+      "tests\\__pycache__\\test_trend_classifier.cpython-311.pyc",
+      "tests\\__pycache__\\verify_data_integrity.cpython-311.pyc",
+      "tests\\__pycache__\\verify_live_quotes.cpython-311.pyc",
+      "tests\\__pycache__\\verify_market_data.cpython-311.pyc",
+      "tests\\__pycache__\\verify_market_data.cpython-315.pyc",
+      "tests\\diagnostics\\__pycache__\\run_full_system_diagnostic.cpython-311.pyc"
+    ],
+    "missing_directories": []
+  },
+  "architecture": {
+    "expected": 22,
+    "present": [
+      "src/config.py",
+      "src/logger.py",
+      "src/market_data.py",
+      "src/mt5_connection.py",
+      "src/data_validation.py",
+      "research/historical_data.py",
+      "research/historical_pipeline.py",
+      "research/historical_storage.py",
+      "research/historical_validation.py",
+      "research/swing_detection/fractal_detector.py",
+      "research/swing_detection/swing_models.py",
+      "research/swing_detection/structure_classifier.py",
+      "research/swing_detection/bos_detector.py",
+      "research/swing_detection/choch_detector.py",
+      "research/swing_detection/trend_classifier.py",
+      "research/swing_detection/alignment_engine.py",
+      "research/swing_detection/market_structure_engine.py",
+      "research/swing_detection/protected_swing_tracker.py",
+      "tests/test_market_data.py",
+      "tests/test_historical_pipeline.py",
+      "tests/test_fractal_detector.py",
+      "tests/test_market_structure_end_to_end.py"
+    ],
+    "missing": []
+  },
+  "syntax": {
+    "checked": 77,
+    "passed": 77,
+    "failed": []
+  },
+  "imports": {
+    "checked": 207,
+    "resolved_count": 207,
+    "unresolved_count": 0,
+    "ignored_external_count": 220,
+    "resolved": [
+      {
+        "file": "research\\analyze_alignment.py",
+        "line": 6,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\analyze_alignment.py",
+        "line": 7,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\analyze_alignment.py",
+        "line": 9,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\analyze_alignment.py",
+        "line": 10,
+        "module": "research.swing_detection.alignment_engine"
+      },
+      {
+        "file": "research\\analyze_alignment.py",
+        "line": 11,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 6,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 7,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 8,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 9,
+        "module": "research.swing_detection.bos_detector"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 10,
+        "module": "research.swing_detection.protected_swing_tracker"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 11,
+        "module": "research.swing_detection.protected_level_registry"
+      },
+      {
+        "file": "research\\analyze_choch.py",
+        "line": 12,
+        "module": "research.swing_detection.choch_detector"
+      },
+      {
+        "file": "research\\analyze_h1_trend.py",
+        "line": 3,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\analyze_h1_trend.py",
+        "line": 4,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\analyze_h1_trend.py",
+        "line": 6,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\analyze_h1_trend.py",
+        "line": 7,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\analyze_h1_trend.py",
+        "line": 8,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\analyze_h1_trend.py",
+        "line": 9,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "research\\analyze_h4_trend.py",
+        "line": 3,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\analyze_h4_trend.py",
+        "line": 4,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\analyze_h4_trend.py",
+        "line": 6,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\analyze_h4_trend.py",
+        "line": 7,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\analyze_h4_trend.py",
+        "line": 8,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\analyze_h4_trend.py",
+        "line": 9,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 6,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 7,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 9,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 10,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 11,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 12,
+        "module": "research.swing_detection.bos_detector"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 13,
+        "module": "research.swing_detection.alignment_engine"
+      },
+      {
+        "file": "research\\analyze_m15_bos.py",
+        "line": 14,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\analyze_m15_trend.py",
+        "line": 4,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\analyze_m15_trend.py",
+        "line": 5,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\analyze_m15_trend.py",
+        "line": 7,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\analyze_m15_trend.py",
+        "line": 8,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\analyze_m15_trend.py",
+        "line": 9,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\analyze_m15_trend.py",
+        "line": 10,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "research\\analyze_protected_swings.py",
+        "line": 7,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\analyze_protected_swings.py",
+        "line": 8,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\analyze_protected_swings.py",
+        "line": 9,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "research\\analyze_protected_swings.py",
+        "line": 10,
+        "module": "research.swing_detection.bos_detector"
+      },
+      {
+        "file": "research\\analyze_protected_swings.py",
+        "line": 11,
+        "module": "research.swing_detection.protected_swing_tracker"
+      },
+      {
+        "file": "research\\audit_m15_m5_research.py",
+        "line": 6,
+        "module": "research.historical_validation"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 3,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 4,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 5,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 6,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 8,
+        "module": "research.historical_data"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 9,
+        "module": "research.historical_validation"
+      },
+      {
+        "file": "research\\collect_h4_research.py",
+        "line": 10,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 5,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 6,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 7,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 8,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 10,
+        "module": "research.historical_data"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 11,
+        "module": "research.historical_validation"
+      },
+      {
+        "file": "research\\collect_m15_m5_research.py",
+        "line": 12,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\diagnose_m15_batch_boundaries.py",
+        "line": 6,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\diagnose_m15_batch_boundaries.py",
+        "line": 7,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "research\\diagnose_m15_batch_boundaries.py",
+        "line": 8,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\diagnose_m15_history.py",
+        "line": 6,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\diagnose_m15_history.py",
+        "line": 7,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\diagnose_m15_history.py",
+        "line": 8,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "research\\diagnose_m15_history.py",
+        "line": 9,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\historical_alignment_validation.py",
+        "line": 8,
+        "module": "research.swing_detection.market_structure_engine"
+      },
+      {
+        "file": "research\\historical_data.py",
+        "line": 6,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\historical_data.py",
+        "line": 7,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\historical_data.py",
+        "line": 8,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 5,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 6,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 7,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 8,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 10,
+        "module": "research.historical_data"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 11,
+        "module": "research.historical_validation"
+      },
+      {
+        "file": "research\\historical_pipeline.py",
+        "line": 12,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\historical_storage.py",
+        "line": 8,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\historical_storage.py",
+        "line": 9,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 8,
+        "module": "src.config"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 9,
+        "module": "src.logger"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 10,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 11,
+        "module": "src.market_data"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 13,
+        "module": "research.historical_data"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 14,
+        "module": "research.historical_validation"
+      },
+      {
+        "file": "research\\recover_m15_history.py",
+        "line": 15,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "research\\swing_detection\\alignment_engine.py",
+        "line": 5,
+        "module": "research.swing_detection.alignment_models"
+      },
+      {
+        "file": "research\\swing_detection\\alignment_engine.py",
+        "line": 6,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\swing_detection\\alignment_models.py",
+        "line": 5,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\swing_detection\\bos_detector.py",
+        "line": 9,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "research\\swing_detection\\bos_detector.py",
+        "line": 10,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\bos_detector.py",
+        "line": 11,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\swing_detection\\bos_detector.py",
+        "line": 12,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\break_models.py",
+        "line": 5,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\break_models.py",
+        "line": 6,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\swing_detection\\choch_detector.py",
+        "line": 9,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\choch_detector.py",
+        "line": 10,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "research\\swing_detection\\choch_detector.py",
+        "line": 11,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\choch_detector.py",
+        "line": 12,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "research\\swing_detection\\choch_detector.py",
+        "line": 13,
+        "module": "research.swing_detection.registry_models"
+      },
+      {
+        "file": "research\\swing_detection\\choch_detector.py",
+        "line": 14,
+        "module": "research.swing_detection.protected_level_registry"
+      },
+      {
+        "file": "research\\swing_detection\\fractal_detector.py",
+        "line": 6,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 8,
+        "module": "research.swing_detection.alignment_engine"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 9,
+        "module": "research.swing_detection.alignment_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 10,
+        "module": "research.swing_detection.bos_detector"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 11,
+        "module": "research.swing_detection.choch_detector"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 12,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 13,
+        "module": "research.swing_detection.protected_level_registry"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 16,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 17,
+        "module": "research.swing_detection.registry_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 18,
+        "module": "research.swing_detection.protected_swing_tracker"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 21,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 24,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 25,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 26,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 27,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\swing_detection\\market_structure_engine.py",
+        "line": 28,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_level_registry.py",
+        "line": 7,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_level_registry.py",
+        "line": 8,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_level_registry.py",
+        "line": 9,
+        "module": "research.swing_detection.registry_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_models.py",
+        "line": 4,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_models.py",
+        "line": 5,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_swing_tracker.py",
+        "line": 3,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_swing_tracker.py",
+        "line": 4,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\protected_swing_tracker.py",
+        "line": 5,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "research\\swing_detection\\registry_models.py",
+        "line": 4,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "research\\swing_detection\\registry_models.py",
+        "line": 5,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "research\\swing_detection\\structure_classifier.py",
+        "line": 5,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "research\\swing_detection\\structure_classifier.py",
+        "line": 6,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\structure_models.py",
+        "line": 4,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "research\\swing_detection\\trend_classifier.py",
+        "line": 5,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "research\\swing_detection\\trend_classifier.py",
+        "line": 6,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "research\\swing_detection\\trend_models.py",
+        "line": 5,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "src\\logger.py",
+        "line": 3,
+        "module": "src.config"
+      },
+      {
+        "file": "src\\market_data.py",
+        "line": 6,
+        "module": "src.logger"
+      },
+      {
+        "file": "src\\mt5_connection.py",
+        "line": 2,
+        "module": "src.config"
+      },
+      {
+        "file": "src\\mt5_connection.py",
+        "line": 3,
+        "module": "src.logger"
+      },
+      {
+        "file": "src\\phase1_check.py",
+        "line": 1,
+        "module": "src.config"
+      },
+      {
+        "file": "src\\phase1_check.py",
+        "line": 2,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "src\\phase1_check.py",
+        "line": 3,
+        "module": "src.market_data"
+      },
+      {
+        "file": "src\\phase1_check.py",
+        "line": 4,
+        "module": "src.data_validation"
+      },
+      {
+        "file": "src\\phase1_check.py",
+        "line": 5,
+        "module": "src.logger"
+      },
+      {
+        "file": "tests\\diagnostics\\run_full_system_diagnostic.py",
+        "line": 1127,
+        "module": "src.config"
+      },
+      {
+        "file": "tests\\diagnostics\\run_full_system_diagnostic.py",
+        "line": 1128,
+        "module": "src.market_data"
+      },
+      {
+        "file": "tests\\diagnostics\\run_full_system_diagnostic.py",
+        "line": 1129,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "tests\\diagnostics\\run_full_system_diagnostic.py",
+        "line": 1130,
+        "module": "research.historical_data"
+      },
+      {
+        "file": "tests\\test_alignment_engine.py",
+        "line": 5,
+        "module": "research.swing_detection.alignment_engine"
+      },
+      {
+        "file": "tests\\test_alignment_engine.py",
+        "line": 6,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "tests\\test_atr_calculator.py",
+        "line": 7,
+        "module": "research.swing_detection.atr_calculator"
+      },
+      {
+        "file": "tests\\test_atr_reference_validation.py",
+        "line": 8,
+        "module": "research.swing_detection.atr_calculator"
+      },
+      {
+        "file": "tests\\test_bos_detector.py",
+        "line": 7,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_bos_detector.py",
+        "line": 8,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_bos_detector.py",
+        "line": 9,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "tests\\test_bos_detector.py",
+        "line": 10,
+        "module": "research.swing_detection.bos_detector"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 8,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 9,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 10,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 11,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 12,
+        "module": "research.swing_detection.registry_models"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 13,
+        "module": "research.swing_detection.protected_level_registry"
+      },
+      {
+        "file": "tests\\test_choch_detector.py",
+        "line": 14,
+        "module": "research.swing_detection.choch_detector"
+      },
+      {
+        "file": "tests\\test_data_validation.py",
+        "line": 6,
+        "module": "src.data_validation"
+      },
+      {
+        "file": "tests\\test_fractal_detector.py",
+        "line": 5,
+        "module": "research.swing_detection.fractal_detector"
+      },
+      {
+        "file": "tests\\test_fractal_detector.py",
+        "line": 6,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_historical_data.py",
+        "line": 8,
+        "module": "research.historical_data"
+      },
+      {
+        "file": "tests\\test_historical_pipeline.py",
+        "line": 7,
+        "module": "research.historical_pipeline"
+      },
+      {
+        "file": "tests\\test_historical_storage.py",
+        "line": 9,
+        "module": "research.historical_storage"
+      },
+      {
+        "file": "tests\\test_historical_validation.py",
+        "line": 6,
+        "module": "research.historical_validation"
+      },
+      {
+        "file": "tests\\test_market_data.py",
+        "line": 3,
+        "module": "src.market_data"
+      },
+      {
+        "file": "tests\\test_market_structure_end_to_end.py",
+        "line": 7,
+        "module": "research.swing_detection.market_structure_engine"
+      },
+      {
+        "file": "tests\\test_market_structure_engine.py",
+        "line": 9,
+        "module": "research.swing_detection.market_structure_engine"
+      },
+      {
+        "file": "tests\\test_market_structure_engine.py",
+        "line": 13,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_market_structure_engine.py",
+        "line": 14,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_market_structure_engine.py",
+        "line": 15,
+        "module": "research.swing_detection.trend_models"
+      },
+      {
+        "file": "tests\\test_market_structure_engine.py",
+        "line": 16,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "tests\\test_market_structure_engine.py",
+        "line": 17,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "tests\\test_market_structure_lifecycle.py",
+        "line": 7,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "tests\\test_market_structure_lifecycle.py",
+        "line": 8,
+        "module": "research.swing_detection.market_structure_engine"
+      },
+      {
+        "file": "tests\\test_market_structure_lifecycle.py",
+        "line": 9,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "tests\\test_market_structure_lifecycle.py",
+        "line": 10,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_market_structure_lifecycle.py",
+        "line": 11,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_market_structure_multi_bos.py",
+        "line": 7,
+        "module": "research.swing_detection.market_structure_engine"
+      },
+      {
+        "file": "tests\\test_market_structure_multi_timeframe.py",
+        "line": 7,
+        "module": "research.swing_detection.market_structure_engine"
+      },
+      {
+        "file": "tests\\test_market_structure_multi_timeframe.py",
+        "line": 11,
+        "module": "test_market_structure_end_to_end"
+      },
+      {
+        "file": "tests\\test_protected_level_registry.py",
+        "line": 5,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_protected_level_registry.py",
+        "line": 6,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_protected_level_registry.py",
+        "line": 7,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "tests\\test_protected_level_registry.py",
+        "line": 8,
+        "module": "research.swing_detection.protected_models"
+      },
+      {
+        "file": "tests\\test_protected_level_registry.py",
+        "line": 9,
+        "module": "research.swing_detection.protected_level_registry"
+      },
+      {
+        "file": "tests\\test_protected_swing_tracker.py",
+        "line": 4,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_protected_swing_tracker.py",
+        "line": 5,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_protected_swing_tracker.py",
+        "line": 6,
+        "module": "research.swing_detection.break_models"
+      },
+      {
+        "file": "tests\\test_protected_swing_tracker.py",
+        "line": 7,
+        "module": "research.swing_detection.protected_swing_tracker"
+      },
+      {
+        "file": "tests\\test_structure_classifier.py",
+        "line": 4,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_structure_classifier.py",
+        "line": 5,
+        "module": "research.swing_detection.structure_classifier"
+      },
+      {
+        "file": "tests\\test_trend_classifier.py",
+        "line": 5,
+        "module": "research.swing_detection.swing_models"
+      },
+      {
+        "file": "tests\\test_trend_classifier.py",
+        "line": 6,
+        "module": "research.swing_detection.structure_models"
+      },
+      {
+        "file": "tests\\test_trend_classifier.py",
+        "line": 7,
+        "module": "research.swing_detection.trend_classifier"
+      },
+      {
+        "file": "tests\\verify_data_integrity.py",
+        "line": 6,
+        "module": "src.config"
+      },
+      {
+        "file": "tests\\verify_data_integrity.py",
+        "line": 7,
+        "module": "src.market_data"
+      },
+      {
+        "file": "tests\\verify_data_integrity.py",
+        "line": 8,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "tests\\verify_data_integrity.py",
+        "line": 9,
+        "module": "src.data_validation"
+      },
+      {
+        "file": "tests\\verify_live_quotes.py",
+        "line": 7,
+        "module": "src.config"
+      },
+      {
+        "file": "tests\\verify_live_quotes.py",
+        "line": 8,
+        "module": "src.market_data"
+      },
+      {
+        "file": "tests\\verify_live_quotes.py",
+        "line": 9,
+        "module": "src.mt5_connection"
+      },
+      {
+        "file": "tests\\verify_market_data.py",
+        "line": 7,
+        "module": "src.config"
+      },
+      {
+        "file": "tests\\verify_market_data.py",
+        "line": 8,
+        "module": "src.market_data"
+      },
+      {
+        "file": "tests\\verify_market_data.py",
+        "line": 9,
+        "module": "src.mt5_connection"
+      }
+    ],
+    "unresolved": [],
+    "status": "PASS"
+  },
+  "dependencies": {
+    "required": {
+      "MetaTrader5": "AVAILABLE",
+      "pandas": "AVAILABLE",
+      "numpy": "AVAILABLE",
+      "PyYAML": "AVAILABLE",
+      "python-dotenv": "AVAILABLE",
+      "pyarrow": "AVAILABLE",
+      "pytest": "AVAILABLE"
+    },
+    "optional": {
+      "matplotlib": "NOT INSTALLED",
+      "requests": "NOT INSTALLED",
+      "websocket-client": "NOT INSTALLED"
+    }
+  },
+  "tests": {
+    "status": "PASS",
+    "return_code": 0,
+    "output": "............................................................ [ 22%]\n........................................................................ [ 49%]\n........................................................................ [ 76%]\n................................................................         [100%]\n268 passed, 12 subtests passed in 2.72s"
+  },
+  "overall_status": "REVIEW"
+}
