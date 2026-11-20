@@ -1,0 +1,10 @@
+0000000000000000000000000000000000000000 3eff2d15b476436bfa10ad93d007b194f2f17793 Michael Tembo <you@example.com> 1794997070 +0200	commit (initial): Phase 2 baseline: tests green (386 passed)
+3eff2d15b476436bfa10ad93d007b194f2f17793 83599990e463b401e25ddcf538f3b1ed96493572 Michael Tembo <you@example.com> 1794997409 +0200	commit: Add structure classifier edge-case tests
+83599990e463b401e25ddcf538f3b1ed96493572 e0fe0bcc12c1f29c587c793a2663dba04dc5a8ed Michael Tembo <you@example.com> 1794998130 +0200	commit: Add trend classifier edge-case tests
+e0fe0bcc12c1f29c587c793a2663dba04dc5a8ed 35fe177367ac4fc6ad9230b4488dbece0f3596b9 Michael Tembo <you@example.com> 1794998324 +0200	commit: Add alignment engine edge-case tests
+35fe177367ac4fc6ad9230b4488dbece0f3596b9 0dda1aac72a640c8dc438972779a30ec13ca8218 Michael Tembo <you@example.com> 1795001885 +0200	commit: Add trade parameter calculator with entry, SL, TP and lot size
+0dda1aac72a640c8dc438972779a30ec13ca8218 39a78399fd7753593343ad93b965da5ae1a79d45 Michael Tembo <you@example.com> 1795002295 +0200	commit: Add live scanning loop with trade parameter logging
+39a78399fd7753593343ad93b965da5ae1a79d45 eda177ab89209e1aa12ef6b85ca2d5f2521d4b77 Michael Tembo <you@example.com> 1795071324 +0200	commit: Add risk manager with daily loss, concurrent trade and lot size controls
+eda177ab89209e1aa12ef6b85ca2d5f2521d4b77 eb9114b2e71289cf9c03e11d0aa5bc702ba08b6c Michael Tembo <you@example.com> 1795098414 +0200	commit: Add fractal detector edge-case tests
+eb9114b2e71289cf9c03e11d0aa5bc702ba08b6c d520474b11f9553a769ec7ee11ee38883340a8d1 Michael Tembo <you@example.com> 1795098665 +0200	commit: Add BOS detector edge-case tests
+d520474b11f9553a769ec7ee11ee38883340a8d1 daef92d5947e2ea948695d1731beb65b99fa5628 Michael Tembo <you@example.com> 1795162585 +0200	commit: Add CHoCH detector edge-case tests
