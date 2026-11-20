@@ -1,0 +1,5 @@
+MetaTrader5; sys_platform == "win32"
+pandas
+python-dotenv
+PyYAML
+pyarrow
